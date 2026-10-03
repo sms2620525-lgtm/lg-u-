@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>JARVIS · 로그인</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;color:#e7f4ff;background:#060916}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(ellipse at 72% 20%,#19315380,transparent 45%),radial-gradient(ellipse at 15% 85%,#321e4880,transparent 40%),#060916}
+.card{width:min(340px,90vw);background:#10182bbb;border:1px solid #b0d4ff22;border-radius:20px;padding:28px;backdrop-filter:blur(12px)}
+.brand{font-weight:700;letter-spacing:6px;margin-bottom:6px}
+h1{font-size:19px;font-weight:400;margin:0 0 18px}
+input{width:100%;background:#070e1b;color:#edf8ff;border:1px solid #ffffff22;border-radius:10px;padding:12px;font:inherit;margin-bottom:10px}
+input:focus,button:focus-visible{outline:2px solid #70dbe7;outline-offset:3px}
+button{width:100%;border:0;border-radius:9px;background:#a3edf1;color:#092132;padding:12px;cursor:pointer;font:inherit;font-weight:600}
+button:disabled{opacity:.5;cursor:wait}
+#status{min-height:20px;color:#ff9f9f;font-size:13px;margin-top:12px}
+</style>
+<body><div class="card">
+<div class="brand">JARVIS</div>
+<h1>다시 오셨네요. 비밀번호를 입력하세요.</h1>
+<input id="password" type="password" autocomplete="current-password" placeholder="비밀번호" autofocus>
+<button id="submit">로그인</button>
+<div id="status" role="status" aria-live="polite"></div>
+</div>
+<script>
+const token='__TOKEN__';
+const $=id=>document.getElementById(id);
+const status=t=>$('status').textContent=t;
+async function submit(){
+  const pw=$('password').value;
+  if(!pw){status('비밀번호를 입력하세요.');return;}
+  $('submit').disabled=true;
+  try{
+    const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-Jarvis-Token':token},body:JSON.stringify({password:pw})});
+    const data=await res.json();
+    if(!res.ok)throw Error(data.error||'로그인하지 못했어요.');
+    location.href='/';
+  }catch(e){status(e.message);$('submit').disabled=false;$('password').value='';$('password').focus();}
+}
+$('submit').onclick=submit;
+$('password').addEventListener('keydown',e=>{if(e.key==='Enter')submit();});
+</script>
+</body></html>
