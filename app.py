@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from auth import Auth, AuthError, read_cookie, session_cookie_header, cleared_session_cookie_header
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,13 +21,14 @@ legacy_db = ROOT / 'data' / 'jarvis.sqlite3'
 if not DB.exists() and legacy_db.exists() and legacy_db != DB:
     with sqlite3.connect(legacy_db) as old, sqlite3.connect(DB) as new:
         old.backup(new)
-TOKEN = secrets.token_urlsafe(32)
+TOKEN = secrets.token_urlsafe(32)  # per-process CSRF token, embedded in every HTML page
 PORT = int(os.environ.get('JARVIS_PORT', '8765'))
 ORIGIN = f'http://127.0.0.1:{PORT}'
 speech_lock = threading.Lock()
 speech = None
 scanner = Scanner(DATA / 'scans')
 phone = PhoneBridge()
+auth = Auth(DB)  # login is separate from the CSRF token: TOKEN proves "same page load", the session cookie proves "logged in"
 
 def connect():
     conn = sqlite3.connect(DB)
@@ -41,7 +43,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send(self, status, value, content_type='application/json; charset=utf-8'):
+    def send(self, status, value, content_type='application/json; charset=utf-8', headers=None):
         body = value.encode() if isinstance(value, str) else json.dumps(value, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -49,25 +51,63 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
+        for name, value_ in (headers or {}).items():
+            self.send_header(name, value_)
         self.end_headers()
         self.wfile.write(body)
+
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header('Location', location)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def is_authed(self):
+        return auth.verify_session(read_cookie(self.headers.get('Cookie'), 'jarvis_session'))
+
+    def page(self, name):
+        """Serve an HTML file from ROOT with __TOKEN__ filled in."""
+        return self.send(200, (ROOT / name).read_text().replace('__TOKEN__', TOKEN), 'text/html; charset=utf-8')
 
     def do_GET(self):
         if self.headers.get('Host') != f'127.0.0.1:{PORT}':
             return self.send(403, {'error': '잘못된 접근 주소입니다.'})
+
+        # --- auth gate for the page routes ---------------------------------
+        if self.path == '/setup':
+            if auth.has_password():
+                return self.redirect('/' if self.is_authed() else '/login')
+            return self.page('setup.html')
+        if self.path == '/login':
+            if not auth.has_password():
+                return self.redirect('/setup')
+            if self.is_authed():
+                return self.redirect('/')
+            return self.page('login.html')
         if self.path == '/':
-            return self.send(200, (ROOT / 'index.html').read_text().replace('__TOKEN__', TOKEN), 'text/html; charset=utf-8')
+            if not auth.has_password():
+                return self.redirect('/setup')
+            if not self.is_authed():
+                return self.redirect('/login')
+            return self.page('index.html')
+
         if self.path in ('/cyber.js', '/cyber.css'):
             kind = 'application/javascript' if self.path.endswith('.js') else 'text/css'
             return self.send(200, (ROOT / self.path[1:]).read_text(), kind + '; charset=utf-8')
-        if self.path == '/api/phone':
-            return self.send(200, phone.snapshot())
-        if self.path == '/api/scan':
-            return self.send(200, scanner.snapshot())
-        if self.path == '/api/memories':
-            with connect() as conn:
-                rows = [dict(r) for r in conn.execute('SELECT * FROM memories ORDER BY id DESC')]
-            return self.send(200, {'memories': rows, 'tts_available': sys.platform == 'darwin'})
+
+        # --- everything past this point is a data API: require a session ----
+        if self.path.startswith('/api/'):
+            if not self.is_authed():
+                return self.send(401, {'error': '로그인이 필요합니다.'})
+            if self.path == '/api/phone':
+                return self.send(200, phone.snapshot())
+            if self.path == '/api/scan':
+                return self.send(200, scanner.snapshot())
+            if self.path == '/api/memories':
+                with connect() as conn:
+                    rows = [dict(r) for r in conn.execute('SELECT * FROM memories ORDER BY id DESC')]
+                return self.send(200, {'memories': rows, 'tts_available': sys.platform == 'darwin'})
+
         self.send(404, {'error': '찾을 수 없습니다.'})
 
     def do_POST(self):
@@ -83,6 +123,34 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError()
+
+            # --- auth endpoints: no session required yet, that's the point ---
+            if self.path == '/api/setup':
+                if auth.has_password():
+                    return self.send(400, {'error': '이미 비밀번호가 설정되어 있습니다.'})
+                try:
+                    auth.set_password(payload.get('password', ''))
+                except AuthError as e:
+                    return self.send(400, {'error': str(e)})
+                token = auth.issue_session()
+                return self.send(200, {'ok': True}, headers={'Set-Cookie': session_cookie_header(token)})
+            elif self.path == '/api/login':
+                try:
+                    ok = auth.verify_password(payload.get('password', ''))
+                except AuthError as e:
+                    return self.send(429, {'error': str(e)})
+                if not ok:
+                    return self.send(401, {'error': '비밀번호가 올바르지 않습니다.'})
+                token = auth.issue_session()
+                return self.send(200, {'ok': True}, headers={'Set-Cookie': session_cookie_header(token)})
+            elif self.path == '/api/logout':
+                auth.revoke_session(read_cookie(self.headers.get('Cookie'), 'jarvis_session'))
+                return self.send(200, {'ok': True}, headers={'Set-Cookie': cleared_session_cookie_header()})
+
+            # --- everything else needs an existing, logged-in session --------
+            if not self.is_authed():
+                return self.send(401, {'error': '로그인이 필요합니다.'})
+
             if self.path == '/api/phone/enable':
                 return self.send(200, phone.enable())
             elif self.path == '/api/phone/connect':
