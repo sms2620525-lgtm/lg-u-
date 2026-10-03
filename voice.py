@@ -39,9 +39,12 @@ class Voice:
 
     def settings(self):
         try:
-            return json.loads(self.config.read_text())
+            data = json.loads(self.config.read_text())
+            if not data.get('reference_id'):
+                data['reference_id'] = '612b878b113047d9a770c069c8b4fdfe'
+            return data
         except (OSError, ValueError):
-            return {'reference_id': '', 'model': 's2.1-pro-free'}
+            return {'reference_id': '612b878b113047d9a770c069c8b4fdfe', 'model': 's2.1-pro-free'}
 
     def snapshot(self):
         with self.lock:

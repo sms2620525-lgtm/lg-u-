@@ -6,7 +6,17 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 python3 -m venv .build-venv
-.build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1' 'pywebview==6.2.1' 'keyring==25.7.0'
+.build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1' 'pywebview==6.2.1' 'keyring==25.7.0' 'PyJWT[crypto]==2.10.1'
+mkdir -p build
+.build-venv/bin/python - <<'SPEECHPLIST'
+import plistlib
+from pathlib import Path
+p=Path('build/speech-info.plist')
+p.write_bytes(plistlib.dumps({'CFBundleIdentifier':'space.jarvis.cyber.speech','CFBundleName':'JarvisCyber Voice','NSMicrophoneUsageDescription':'자비스 호출과 음성 대화에 마이크를 사용합니다.','NSSpeechRecognitionUsageDescription':'한국어 음성을 텍스트로 변환해 자비스와 대화합니다.'}))
+SPEECHPLIST
+xcrun swiftc native/SpeechHelper.swift -o build/JarvisSpeech -framework AVFoundation -framework Speech \
+  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker build/speech-info.plist
+build/JarvisSpeech --check
 .build-venv/bin/python -m PyInstaller \
   --noconfirm \
   --clean \
@@ -16,6 +26,12 @@ python3 -m venv .build-venv
   --hidden-import=webview.platforms.cocoa \
   --hidden-import=keyring.backends.macOS \
   --hidden-import=voice \
+  --hidden-import=chatgpt \
+  --hidden-import=microphone \
+  --hidden-import=jwt \
+  --collect-all cryptography \
+  --add-binary 'build/JarvisSpeech:.' \
+  --add-data 'conversation.js:.' \
   --hidden-import=auth \
   --hidden-import=security \
   --hidden-import=phone \

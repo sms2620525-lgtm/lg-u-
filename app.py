@@ -6,12 +6,16 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import urllib.parse
+import webbrowser
 from pathlib import Path
 
 from http.server import BaseHTTPRequestHandler
 
 from auth import Auth, AuthError, read_cookie, session_cookie_header, cleared_session_cookie_header
 from voice import Voice
+from chatgpt import ChatGPT, Conversation
+from microphone import Microphone
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
 
@@ -35,6 +39,8 @@ phone = PhoneBridge()
 auth = Auth(DB)
 voice = Voice(DATA)
 native_window = None
+account = ChatGPT(DATA, ORIGIN + '/auth/callback')
+microphone = Microphone(ROOT)
 
 def connect():
     conn = sqlite3.connect(DB)
@@ -44,6 +50,7 @@ def connect():
 with connect() as conn:
     conn.execute('CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
 os.chmod(DB, 0o600)
+conversation = Conversation(account, connect)
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -78,6 +85,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Host') != f'127.0.0.1:{PORT}':
             return self.send(403, {'error': '잘못된 접근 주소입니다.'})
 
+        if self.path.startswith('/auth/callback?'):
+            try:
+                parsed = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                if any(len(v) != 1 for v in parsed.values()):
+                    raise ValueError('로그인 응답 형식이 올바르지 않아요.')
+                account.complete({k: v[0] for k, v in parsed.items()})
+                conversation.cancel()
+                return self.send(200, 'ChatGPT 연결이 완료되었습니다. JarvisCyber 앱으로 돌아가세요.', 'text/plain; charset=utf-8')
+            except ValueError as e:
+                return self.send(400, str(e), 'text/plain; charset=utf-8')
+
         if self.path == '/setup':
             if auth.has_password():
                 return self.redirect('/' if self.is_authed() else '/login')
@@ -95,13 +113,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.redirect('/login')
             return self.page('index.html')
 
-        if self.path in ('/cyber.js', '/cyber.css'):
+        if self.path in ('/cyber.js', '/cyber.css', '/conversation.js'):
             kind = 'application/javascript' if self.path.endswith('.js') else 'text/css'
             return self.send(200, (ROOT / self.path[1:]).read_text(), kind + '; charset=utf-8')
 
         if self.path.startswith('/api/'):
             if not self.is_authed():
                 return self.send(401, {'error': '로그인이 필요합니다.'})
+            if self.path == '/api/account':
+                return self.send(200, account.public())
+            if self.path == '/api/chat':
+                return self.send(200, conversation.snapshot())
+            if self.path == '/api/microphone':
+                return self.send(200, microphone.snapshot())
             if self.path == '/api/voice':
                 return self.send(200, voice.snapshot())
             if self.path == '/api/phone':
@@ -147,13 +171,47 @@ class Handler(BaseHTTPRequestHandler):
                 token = auth.issue_session()
                 return self.send(200, {'ok': True}, headers={'Set-Cookie': session_cookie_header(token)})
             elif self.path == '/api/logout':
+                microphone.stop()
+                conversation.cancel()
+                voice.stop()
                 auth.revoke_session(read_cookie(self.headers.get('Cookie'), 'jarvis_session'))
                 return self.send(200, {'ok': True}, headers={'Set-Cookie': cleared_session_cookie_header()})
 
             if not self.is_authed():
                 return self.send(401, {'error': '로그인이 필요합니다.'})
 
-            if self.path == '/api/voice':
+            if self.path == '/api/account/login':
+                return self.send(200, account.begin(payload.get('client')))
+            elif self.path == '/api/account/models':
+                return self.send(200, account.models())
+            elif self.path == '/api/account/model':
+                account.select_model(payload.get('model'))
+            elif self.path == '/api/account/switch':
+                conversation.cancel()
+                voice.stop()
+                return self.send(200, account.switch(payload.get('client')))
+            elif self.path == '/api/account/logout':
+                microphone.stop()
+                conversation.cancel()
+                voice.stop()
+                return self.send(200, account.signout())
+            elif self.path == '/api/account/usage':
+                webbrowser.open('https://chatgpt.com/settings/usage')
+            elif self.path == '/api/chat':
+                microphone.stop()
+                voice.stop()
+                return self.send(200, conversation.start(payload.get('text')))
+            elif self.path == '/api/chat/cancel':
+                conversation.cancel()
+                voice.stop()
+            elif self.path == '/api/chat/clear':
+                conversation.clear()
+                voice.stop()
+            elif self.path == '/api/microphone/start':
+                return self.send(200, microphone.start())
+            elif self.path == '/api/microphone/stop':
+                microphone.stop()
+            elif self.path == '/api/voice':
                 return self.send(200, voice.save(payload))
             elif self.path == '/api/voice/search':
                 return self.send(200, voice.models(payload.get('query', 'Jarvis')))
@@ -184,6 +242,7 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as conn:
                     conn.execute('DELETE FROM memories WHERE id = ?', (payload['id'],))
             elif self.path == '/api/speak':
+                microphone.stop()
                 return self.send(200, voice.speak(payload.get('text', '')))
             elif self.path == '/api/stop':
                 voice.stop()
@@ -210,6 +269,7 @@ if __name__ == '__main__':
             smoke = '--native-smoke' in sys.argv
             smoke_result = {'ok': False}
             if smoke:
+                subprocess.run([str(ROOT / 'JarvisSpeech'), '--check'], check=True, stdout=subprocess.DEVNULL, timeout=10)
                 def check_window():
                     try:
                         smoke_result['ok'] = bool(native_window.evaluate_js("document.querySelector('input[type=password]') !== null"))
@@ -229,6 +289,8 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         pass
     finally:
+        microphone.stop()
+        conversation.cancel()
         phone.stop()
         scanner.cancel()
         voice.stop()

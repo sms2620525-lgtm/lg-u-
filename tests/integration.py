@@ -54,8 +54,13 @@ with tempfile.TemporaryDirectory() as directory:
         call('/api/memories', expected=401)
         call('/api/setup', {'password': 'testpass123'})
         assert 'phone-enable' in call('/')
-        for asset in ('/cyber.js', '/cyber.css'):
+        for asset in ('/cyber.js', '/cyber.css', '/conversation.js'):
             assert call(asset)
+        assert not call('/api/account')['connected']
+        assert call('/api/chat')['messages'] == []
+        call('/api/chat', {'text': 'hello'}, expected=400)
+        call('/auth/callback?state=wrong&code=wrong', expected=400)
+        assert call('/api/voice')['reference_id'] == '612b878b113047d9a770c069c8b4fdfe'
         call('/api/memories', {'text': 'preserve after restart'})
         call('/api/logout', {})
         assert 'current-password' in call('/')

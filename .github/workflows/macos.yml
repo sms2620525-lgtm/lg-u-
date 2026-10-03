@@ -2,7 +2,7 @@ name: Build macOS DMG
 on:
   push:
     branches: [main]
-    paths: ['*.py', '*.html', '*.js', '*.css', 'tests/**', 'build-macos.sh', '.github/workflows/macos.yml']
+    paths: ['*.py', '*.html', '*.js', '*.css', 'tests/**', 'native/**', 'build-macos.sh', '.github/workflows/macos.yml']
   workflow_dispatch:
 
 permissions:
@@ -22,6 +22,7 @@ jobs:
         with:
           python-version: '3.12'
 
+      - run: python3 -m pip install "PyJWT[crypto]==2.10.1"
       - run: python3 -m unittest discover -s tests
       - run: python3 tests/integration.py
       - run: bash build-macos.sh
