@@ -7,7 +7,22 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 python3 -m venv .build-venv
 .build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1'
-.build-venv/bin/python -m PyInstaller --noconfirm --clean --windowed --collect-submodules bleak --name JarvisCyber --add-data 'index.html:.' --add-data 'cyber.js:.' --add-data 'cyber.css:.' app.py
+.build-venv/bin/python -m PyInstaller \
+  --noconfirm \
+  --clean \
+  --windowed \
+  --collect-submodules bleak \
+  --collect-all auth \
+  --collect-all security \
+  --collect-all phone \
+  --hidden-import=auth \
+  --hidden-import=security \
+  --hidden-import=phone \
+  --name JarvisCyber \
+  --add-data 'index.html:.' \
+  --add-data 'cyber.js:.' \
+  --add-data 'cyber.css:.' \
+  app.py
 .build-venv/bin/python - <<'PLIST'
 import plistlib
 from pathlib import Path
