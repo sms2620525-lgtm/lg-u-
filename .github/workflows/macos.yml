@@ -1,0 +1,41 @@
+name: Build macOS DMG
+on:
+  push:
+    branches: [main]
+    paths: ['*.py', '*.html', '*.js', '*.css', 'build-macos.sh', '.github/workflows/macos.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s tests
+      - run: bash build-macos.sh
+      - name: Verify bundle starts
+        shell: bash
+        run: |
+          dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --no-browser &
+          APP_PID=$!
+          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8765/ > /tmp/jarvis-page; then
+              break
+            fi
+            sleep 1
+          done
+          grep -q 'JARVIS' /tmp/jarvis-page
+          hdiutil verify dist/*.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JarvisCyber-${{ runner.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
