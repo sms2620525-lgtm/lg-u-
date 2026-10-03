@@ -6,12 +6,16 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 python3 -m venv .build-venv
-.build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1'
+.build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1' 'pywebview==6.2.1' 'keyring==25.7.0'
 .build-venv/bin/python -m PyInstaller \
   --noconfirm \
   --clean \
   --windowed \
   --collect-submodules bleak \
+  --collect-all webview \
+  --hidden-import=webview.platforms.cocoa \
+  --hidden-import=keyring.backends.macOS \
+  --hidden-import=voice \
   --hidden-import=auth \
   --hidden-import=security \
   --hidden-import=phone \
@@ -28,6 +32,8 @@ from pathlib import Path
 p=Path('dist/JarvisCyber.app/Contents/Info.plist')
 with p.open('rb') as f: data=plistlib.load(f)
 data['NSBluetoothAlwaysUsageDescription']='휴대폰의 기울기를 Bluetooth로 받아 3D 화면을 회전합니다.'
+data['NSMicrophoneUsageDescription']='소리 감지와 IP 음성 입력에 마이크를 사용합니다.'
+data['NSSpeechRecognitionUsageDescription']='IP 주소를 음성으로 입력합니다.'
 data['CFBundleIdentifier']='space.jarvis.cyber'
 with p.open('wb') as f: plistlib.dump(data,f)
 PLIST

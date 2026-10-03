@@ -28,6 +28,11 @@ jobs:
 
       - name: Verify packaged setup, login and memory persistence
         run: python3 tests/integration.py --executable dist/JarvisCyber.app/Contents/MacOS/JarvisCyber
+      - name: Verify native app window loads and closes
+        run: |
+          export JARVIS_DATA_DIR="$(mktemp -d)"
+          export JARVIS_PORT=18766
+          dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --native-smoke
       - name: Verify DMG
         run: hdiutil verify dist/*.dmg
 

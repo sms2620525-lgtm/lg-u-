@@ -6,12 +6,12 @@ import sqlite3
 import subprocess
 import sys
 import threading
-import webbrowser
 from pathlib import Path
 
 from http.server import BaseHTTPRequestHandler
 
 from auth import Auth, AuthError, read_cookie, session_cookie_header, cleared_session_cookie_header
+from voice import Voice
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
 
@@ -30,11 +30,11 @@ if not DB.exists() and legacy_db.exists() and legacy_db != DB:
 TOKEN = secrets.token_urlsafe(32)
 PORT = int(os.environ.get('JARVIS_PORT', '8765'))
 ORIGIN = f'http://127.0.0.1:{PORT}'
-speech_lock = threading.Lock()
-speech = None
 scanner = Scanner(DATA / 'scans')
 phone = PhoneBridge()
 auth = Auth(DB)
+voice = Voice(DATA)
+native_window = None
 
 def connect():
     conn = sqlite3.connect(DB)
@@ -102,6 +102,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/'):
             if not self.is_authed():
                 return self.send(401, {'error': '로그인이 필요합니다.'})
+            if self.path == '/api/voice':
+                return self.send(200, voice.snapshot())
             if self.path == '/api/phone':
                 return self.send(200, phone.snapshot())
             if self.path == '/api/scan':
@@ -114,7 +116,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {'error': '찾을 수 없습니다.'})
 
     def do_POST(self):
-        global speech
         if (self.headers.get('Host') != f'127.0.0.1:{PORT}' or
                 self.headers.get('Origin') != ORIGIN or
                 self.headers.get('X-Jarvis-Token') != TOKEN):
@@ -152,7 +153,11 @@ class Handler(BaseHTTPRequestHandler):
             if not self.is_authed():
                 return self.send(401, {'error': '로그인이 필요합니다.'})
 
-            if self.path == '/api/phone/enable':
+            if self.path == '/api/voice':
+                return self.send(200, voice.save(payload))
+            elif self.path == '/api/voice/search':
+                return self.send(200, voice.models(payload.get('query', 'Jarvis')))
+            elif self.path == '/api/phone/enable':
                 return self.send(200, phone.enable())
             elif self.path == '/api/phone/connect':
                 return self.send(200, phone.connect(payload.get('device'), payload.get('pin')))
@@ -164,6 +169,8 @@ class Handler(BaseHTTPRequestHandler):
                 scanner.cancel()
             elif self.path == '/api/quit':
                 scanner.cancel()
+                if native_window:
+                    native_window.destroy()
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             elif self.path == '/api/memories':
                 text = payload.get('text', '')
@@ -176,20 +183,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError()
                 with connect() as conn:
                     conn.execute('DELETE FROM memories WHERE id = ?', (payload['id'],))
-            elif self.path in ('/api/speak', '/api/stop'):
-                if sys.platform != 'darwin':
-                    return self.send(400, {'error': '기본 음성은 맥에서 실행할 때 사용할 수 있어요.'})
-                text = payload.get('text', '')
-                if not isinstance(text, str) or len(text) > 2000:
-                    raise ValueError()
-                with speech_lock:
-                    if speech and speech.poll() is None:
-                        speech.terminate()
-                        speech.wait(timeout=3)
-                    if self.path == '/api/speak' and text.strip():
-                        speech = subprocess.Popen(['/usr/bin/say'], stdin=subprocess.PIPE)
-                        speech.stdin.write(text.encode())
-                        speech.stdin.close()
+            elif self.path == '/api/speak':
+                return self.send(200, voice.speak(payload.get('text', '')))
+            elif self.path == '/api/stop':
+                voice.stop()
             else:
                 return self.send(404, {'error': '찾을 수 없습니다.'})
             self.send(200, {'ok': True})
@@ -199,18 +196,40 @@ class Handler(BaseHTTPRequestHandler):
             self.send(500, {'error': '처리하지 못했어요. 다시 시도해 주세요.'})
 
 if __name__ == '__main__':
-    if sys.stdout:
-        print(f'JARVIS: {ORIGIN} (종료: Ctrl+C)', flush=True)
     server = NumericHTTPServer(('127.0.0.1', PORT), Handler)
-    if '--no-browser' not in sys.argv:
-        webbrowser.open(ORIGIN)
     try:
-        server.serve_forever()
+        if '--no-browser' in sys.argv:
+            # Headless integration-test mode, never opens a browser.
+            server.serve_forever()
+        else:
+            import webview
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            native_window = webview.create_window('JARVIS · Command Center', ORIGIN,
+                width=1440, height=940, min_size=(1000, 720), background_color='#020c10')
+            smoke = '--native-smoke' in sys.argv
+            smoke_result = {'ok': False}
+            if smoke:
+                def check_window():
+                    try:
+                        smoke_result['ok'] = bool(native_window.evaluate_js("document.querySelector('input[type=password]') !== null"))
+                    finally:
+                        native_window.destroy()
+                native_window.events.loaded += check_window
+                watchdog = threading.Timer(40, native_window.destroy)
+                watchdog.daemon = True
+                watchdog.start()
+            webview.start(gui='cocoa', debug=False, private_mode=True)
+            if smoke:
+                watchdog.cancel()
+                if not smoke_result['ok']:
+                    raise RuntimeError('Native WebKit window did not load the setup page')
+            server.shutdown()
+            thread.join(timeout=5)
     except KeyboardInterrupt:
         pass
     finally:
         phone.stop()
         scanner.cancel()
+        voice.stop()
         server.server_close()
-        if speech and speech.poll() is None:
-            speech.terminate()

@@ -2,13 +2,13 @@
 
 ## 설치 / DMG
 
-GitHub **Actions → Build macOS DMG → 성공한 실행 → Artifacts**에서 `JarvisCyber-ARM64` ZIP을 받아 안의 DMG를 엽니다. Apple Silicon 전용입니다. Intel 빌드는 더 이상 생성하지 않습니다. 앱을 Applications로 옮겨 실행하면 기본 브라우저에 로컬 화면이 열립니다. 이 빌드는 macOS 15 실행 환경에서 검증합니다.
+GitHub **Actions → Build macOS DMG → 성공한 실행 → Artifacts**에서 `JarvisCyber-ARM64` ZIP을 받아 안의 DMG를 엽니다. Apple Silicon 전용입니다. Intel 빌드는 더 이상 생성하지 않습니다. 앱을 Applications로 옮겨 실행하면 전용 macOS 앱 창에서 화면이 열립니다. 외부 브라우저를 실행하지 않습니다. 이 빌드는 macOS 15 실행 환경에서 검증합니다.
 
 DMG는 아직 Developer ID 서명/공증되지 않은 개발용 빌드입니다. macOS가 실행을 차단할 수 있습니다. 시스템 전체 보안 기능을 끄지 마세요.
 
 Nmap은 포함하지 않습니다. [공식 Nmap macOS 설치 안내](https://nmap.org/book/inst-macosx.html)에 따라 별도 설치하세요. 앱은 `/opt/homebrew/bin/nmap`, `/usr/local/bin/nmap`, PATH를 확인합니다. Python은 DMG에 포함됩니다.
 
-직접 실행하려면 Python 3.10 이상에서 `python3 app.py`. 직접 DMG를 만들려면 macOS에서 `bash build-macos.sh`.
+직접 실행하려면 Python 3.10 이상에서 `python3 -m pip install bleak==3.0.1 pywebview==6.2.1 keyring==25.7.0` 후 `python3 app.py`. 직접 DMG를 만들려면 macOS에서 `bash build-macos.sh`.
 
 ## 현재 구현
 
@@ -16,9 +16,9 @@ Nmap은 포함하지 않습니다. [공식 Nmap macOS 설치 안내](https://nma
 - IPv4 / IPv6, 중단 버튼, 최대 실행 시간 150초
 - macOS 터미널에 정확한 명령과 실시간 로그 표시 (Nmap은 앱에서 실행)
 - 실제 Nmap XML 결과를 3D 포트 노드와 텍스트 목록으로 표시, 드래그 회전
-- 지원 브라우저에서 IP 음성 입력 → 인식 결과 확인 → 점검 시작
-- 맥 시스템 기본 TTS, 개인 기억 저장·삭제
-- 앱 종료 버튼 (브라우저 탭을 닫는 것만으로 서버가 종료되지는 않음)
+- WebKit이 지원하는 환경에서 IP 음성 입력 → 인식 결과 확인 → 점검 시작
+- Fish Audio TTS, 개인 기억 저장·삭제
+- 창을 닫거나 앱 종료 버튼으로 서버와 Bluetooth·음성 재생 종료
 
 소유하거나 점검 권한이 있는 장치에 사용하세요. 열린 포트는 취약점 확정 판정이 아닙니다. 3D 배치는 포트 구성을 표현하며 실제 네트워크 경로나 지리 정보가 아닙니다. `-Pn`을 쓰므로 응답이 없는 주소도 점검하며 호스트 존재 여부를 확정하지 않습니다. 임의 셸 명령, exploit, 비밀번호 공격은 구현하지 않았습니다.
 
@@ -46,7 +46,7 @@ Wi-Fi/인터넷 연결은 필요하지 않습니다. 시스템 Bluetooth 설정�
 
 ## 저장과 한계
 
-맥에서는 `~/Library/Application Support/JarvisCyber/`에 기억 SQLite와 스캔 XML/로그가 저장됩니다. 기존 소스 실행 버전의 `data/jarvis.sqlite3`는 처음 실행 시 새 DB가 없을 때 복사합니다. 환경 변수 `JARVIS_DATA_DIR`로 경로를 지정할 수 있습니다. 개인 데이터는 GitHub로 전송하지 않습니다. 주 앱은 `127.0.0.1:8765`에서만 수신합니다. 휴대폰 자세 데이터는 BLE로만 받으며 LAN 수신 포트는 열지 않습니다. TTS는 macOS `say`, 음성 인식은 브라우저 제공 기능이므로 브라우저에 따라 외부 음성 인식 서비스를 사용할 수 있습니다.
+맥에서는 `~/Library/Application Support/JarvisCyber/`에 기억 SQLite와 스캔 XML/로그가 저장됩니다. 기존 소스 실행 버전의 `data/jarvis.sqlite3`는 처음 실행 시 새 DB가 없을 때 복사합니다. 환경 변수 `JARVIS_DATA_DIR`로 경로를 지정할 수 있습니다. 개인 데이터는 GitHub로 전송하지 않습니다. 주 앱은 `127.0.0.1:8765`에서만 수신합니다. 휴대폰 자세 데이터는 BLE로만 받으며 LAN 수신 포트는 열지 않습니다. TTS는 Fish Audio API이며 문장이 해당 서비스로 전송됩니다. 음성 인식은 내장 WebKit 지원 여부에 따라 제한될 수 있습니다.
 
 **GPT 대화/로그인, 외부 DB 동기화는 아직 구현되지 않았습니다.** 현재 보안 작업은 고정된 Nmap 명령을 실행하는 도구입니다. 다른 스캐너는 아직 포함하지 않습니다.
 
@@ -55,3 +55,11 @@ Wi-Fi/인터넷 연결은 필요하지 않습니다. 시스템 Bluetooth 설정�
 `python3 -m unittest discover -s tests`
 
 명령 주입 입력 거부, 단일 IP 검증, XML 파싱, 기억 CRUD, CSRF 차단, 정적 파일을 검사합니다. GitHub macOS 빌드는 앱 실행/HTTP 응답과 DMG 무결성을 추가 검사합니다. 실제 맥 음성·터미널·마이크·핏3 동작은 별도 실기기 검증이 필요합니다.
+
+## Fish Audio 음성 설정
+
+앱의 VOICE LINK에서 **API 키 파일 가져오기**로 키 하나가 든 RTF 또는 TXT 파일을 선택하세요. 키는 macOS Keychain에만 저장하며 GitHub, DMG, 설정 JSON에는 포함하지 않습니다. 음성 검색 결과에서 이름과 제작자를 확인하거나 Fish Audio 음성 페이지의 32자리 모델 ID를 입력하고 저장하세요. “자비스 McP”는 정확한 ID가 확인되지 않아 임의의 Jarvis 음성을 기본으로 지정하지 않았습니다.
+
+기본 엔진은 `s2.1-pro-free`이며 계정에 맞게 변경할 수 있습니다. 음성 테스트는 Fish Audio 요청을 수행합니다. 네트워크 오류, 키 오류, 잔액/요금제 오류는 앱 안에 표시됩니다. 정지 버튼은 생성 중 응답도 무효화하며 이전 음성이 뒤늦게 재생되지 않습니다.
+
+사진의 청록색 원형 HUD를 코드로 구성했습니다. 회전 링, 빛나는 코어, 포트 노드가 휴대폰 자세에 함께 반응합니다. 코어는 스타일 표현이며 시스템 부하나 보안 탐지 값을 가장하지 않습니다.
