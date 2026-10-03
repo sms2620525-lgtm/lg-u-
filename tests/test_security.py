@@ -32,11 +32,13 @@ class ScanTests(unittest.TestCase):
 
 class APITests(unittest.TestCase):
     @classmethod
-    def setUpClass(cls):
-        cls.tmp=tempfile.TemporaryDirectory()
-        os.environ['JARVIS_DATA_DIR']=cls.tmp.name
-        import app
-        cls.app=app
+def setUpClass(cls):
+    cls.tmp = tempfile.TemporaryDirectory()
+    os.environ['JARVIS_DATA_DIR'] = cls.tmp.name
+    import app
+    cls.app = app
+    cls.app.auth.set_password('password1234')
+    cls.session = cls.app.auth.issue_session()
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
