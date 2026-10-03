@@ -32,7 +32,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     void message(String text){runOnUiThread(()->status.setText(text));}
     @Override public void onCreate(Bundle state){
         super.onCreate(state);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        LinearLayout layout=new LinearLayout(this);layout.setOrientation(1);layout.setPadding(40,90,40,40);layout.setBackgroundColor(Color.rgb(6,9,22));
+        LinearLayout layout=new LinearLayout(this);layout.setOrientation(LinearLayout.VERTICAL);layout.setPadding(40,90,40,40);layout.setBackgroundColor(Color.rgb(6,9,22));
         TextView title=new TextView(this);title.setText("JARVIS\nBluetooth Motion");title.setTextSize(28);title.setTextColor(Color.rgb(150,235,240));layout.addView(title);
         TextView guide=new TextView(this);guide.setText("휴대폰이 3D 컨트롤러가 됩니다.\n전송 시작 → 맥에서 휴대폰 검색 → 아래 코드 입력\nWi-Fi와 인터넷은 필요하지 않아요.\n");layout.addView(guide);
         code=new TextView(this);code.setText("------");code.setTextSize(40);layout.addView(code);
