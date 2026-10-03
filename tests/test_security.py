@@ -40,13 +40,30 @@ class APITests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
-    def request(self,path,payload=None,valid=True):
-        h=object.__new__(self.app.Handler);h.path=path
-        data=json.dumps(payload).encode();h.rfile=io.BytesIO(data)
-        h.headers={'Host':f'127.0.0.1:{self.app.PORT}','Origin':self.app.ORIGIN,'X-Jarvis-Token':self.app.TOKEN if valid else 'bad','Content-Length':str(len(data))}
-        result=[];h.send=lambda *args:result.append(args)
-        (h.do_GET if payload is None else h.do_POST)()
-        return result[0]
+    def request(self, path, payload=None, valid=True):
+    h = object.__new__(self.app.Handler)
+    h.path = path
+    h.requestline = f"{'GET' if payload is None else 'POST'} {path} HTTP/1.1"
+    h.client_address = ('127.0.0.1', 12345)
+    h.server = type('Server', (), {'server_port': self.app.PORT, 'shutdown': lambda *a, **k: None})()
+
+    data = json.dumps(payload).encode() if payload is not None else b''
+    h.rfile = io.BytesIO(data)
+
+    # 세션 쿠키를 실제 브라우저처럼 넣어주면 /api/memories, /api/delete 등 인증 경로 통과
+    session = self.app.auth.issue_session()
+    h.headers = {
+        'Host': f'127.0.0.1:{self.app.PORT}',
+        'Origin': self.app.ORIGIN,
+        'X-Jarvis-Token': self.app.TOKEN if valid else 'bad',
+        'Content-Length': str(len(data)),
+        'Cookie': f'jarvis_session={session}',
+    }
+
+    result = []
+    h.send = lambda *args: result.append(args)
+    (h.do_GET if payload is None else h.do_POST)()
+    return result[0] if result else (401, {})
     def test_memory_and_csrf(self):
         self.assertEqual(self.request('/api/memories',{'text':'hello'})[0],200)
         rows=self.request('/api/memories')[1]['memories'];self.assertEqual(len(rows),1)
