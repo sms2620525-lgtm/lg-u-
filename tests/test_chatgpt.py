@@ -125,3 +125,22 @@ class ConversationTests(unittest.TestCase):
                 self.assertEqual([x['text'] for x in chat.snapshot()['messages'] if x['role']=='assistant'],['hello'])
             account.meta['active']='account-b'
             self.assertEqual(chat.snapshot()['messages'],[])
+
+class LoginDiagnosticsTests(unittest.TestCase):
+    def test_oauth_error_is_actionable_without_echoing_tokens(self):
+        import io
+        import urllib.error
+        from chatgpt import http_json
+        response=urllib.error.HTTPError('https://auth.openai.com',400,'bad',{},io.BytesIO(b'{"error":"invalid_grant","error_description":"SECRET_TOKEN"}'))
+        with patch('chatgpt.urllib.request.urlopen',side_effect=response):
+            with self.assertRaises(ValueError) as raised:http_json('https://auth.openai.com')
+        self.assertIn('만료',str(raised.exception))
+        self.assertNotIn('SECRET_TOKEN',str(raised.exception))
+
+    def test_expired_login_stops_waiting(self):
+        with tempfile.TemporaryDirectory() as d:
+            client=ChatGPT(d,'http://127.0.0.1:8765/auth/callback',Vault())
+            client.pending={'expires':0}
+            result=client.public()
+            self.assertFalse(result['pending'])
+            self.assertIn('만료',result['error'])

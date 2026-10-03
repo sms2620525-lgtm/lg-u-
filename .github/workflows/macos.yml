@@ -34,6 +34,10 @@ jobs:
           export JARVIS_DATA_DIR="$(mktemp -d)"
           export JARVIS_PORT=18766
           dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --native-smoke
+      - name: Verify packaged OpenAI HTTPS and signing-key access
+        run: |
+          export JARVIS_DATA_DIR="$(mktemp -d)"
+          dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --network-smoke
       - name: Verify DMG
         run: hdiutil verify dist/*.dmg
 

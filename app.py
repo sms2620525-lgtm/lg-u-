@@ -255,6 +255,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send(500, {'error': '처리하지 못했어요. 다시 시도해 주세요.'})
 
 if __name__ == '__main__':
+    if '--network-smoke' in sys.argv:
+        import jwt
+        from network import tls_context
+        discovery = account.discover()
+        jwt.PyJWKClient(discovery['jwks_uri'], ssl_context=tls_context()).get_jwk_set()
+        sys.exit(0)
     server = NumericHTTPServer(('127.0.0.1', PORT), Handler)
     try:
         if '--no-browser' in sys.argv:

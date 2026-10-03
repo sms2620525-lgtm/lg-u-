@@ -6,7 +6,7 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 python3 -m venv .build-venv
-.build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1' 'pywebview==6.2.1' 'keyring==25.7.0' 'PyJWT[crypto]==2.10.1'
+.build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1' 'pywebview==6.2.1' 'keyring==25.7.0' 'PyJWT[crypto]==2.10.1' 'certifi==2026.7.22'
 mkdir -p build
 .build-venv/bin/python - <<'SPEECHPLIST'
 import plistlib
@@ -29,6 +29,8 @@ build/JarvisSpeech --check
   --hidden-import=chatgpt \
   --hidden-import=microphone \
   --hidden-import=jwt \
+  --hidden-import=network \
+  --collect-data certifi \
   --collect-all cryptography \
   --add-binary 'build/JarvisSpeech:.' \
   --add-data 'conversation.js:.' \

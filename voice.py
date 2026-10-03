@@ -8,6 +8,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from pathlib import Path
+from network import tls_context
 
 
 def extract_key(document):
@@ -87,7 +88,7 @@ class Voice:
         req = urllib.request.Request('https://api.fish.audio/' + path,
             data=json.dumps(body).encode() if body is not None else None, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=40) as response:
+            with urllib.request.urlopen(req, timeout=40, context=tls_context()) as response:
                 return response.read(16 * 1024 * 1024)
         except urllib.error.HTTPError as e:
             raise ValueError({401: 'Fish Audio API 키가 유효하지 않아요.', 402: 'Fish Audio 잔액 또는 요금제를 확인하세요.', 429: '음성 요청이 많아요. 잠시 후 다시 시도하세요.'}.get(e.code, 'Fish Audio 요청 실패 (HTTP %s)' % e.code)) from None
