@@ -21,20 +21,20 @@ jobs:
       - run: python3 -m unittest discover -s tests
       - run: python3 tests/integration.py
       - run: bash build-macos.sh
-      - name: Verify bundle starts
-        shell: bash
-        run: |
-          dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --no-browser &
-          APP_PID=$!
-          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
-          for attempt in {1..20}; do
-            if curl --fail --silent http://127.0.0.1:8765/ > /tmp/jarvis-page; then
-              break
-            fi
-            sleep 1
-          done
-          grep -q 'JARVIS' /tmp/jarvis-page
-          hdiutil verify dist/*.dmg
+      -- name: Verify bundle starts
+  shell: bash
+  run: |
+    dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --no-browser &
+    APP_PID=$!
+    trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+    for attempt in {1..20}; do
+      if curl -L --fail --silent http://127.0.0.1:8765/ > /tmp/jarvis-page; then
+        break
+      fi
+      sleep 1
+    done
+    grep -q 'JARVIS' /tmp/jarvis-page
+    hdiutil verify dist/*.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: JarvisCyber-${{ runner.arch }}
