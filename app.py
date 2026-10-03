@@ -9,7 +9,7 @@ import sys
 import threading
 import webbrowser
 from security import Scanner
-from phone import PhoneBridge
+from phone import PhoneBridge, NumericHTTPServer
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parent
@@ -85,6 +85,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError()
             if self.path == '/api/phone/enable':
                 return self.send(200, phone.enable())
+            elif self.path == '/api/phone/connect':
+                return self.send(200, phone.connect(payload.get('device'), payload.get('pin')))
             elif self.path == '/api/phone/disable':
                 phone.stop()
             elif self.path == '/api/scan':
@@ -130,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == '__main__':
     if sys.stdout:
         print(f'JARVIS: {ORIGIN} (종료: Ctrl+C)', flush=True)
-    server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    server = NumericHTTPServer(('127.0.0.1', PORT), Handler)
     if '--no-browser' not in sys.argv:
         webbrowser.open(ORIGIN)
     try:

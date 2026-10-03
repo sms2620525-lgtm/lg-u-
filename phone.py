@@ -1,89 +1,119 @@
-"""Opt-in LAN motion receiver. Never exposes memory or scan endpoints."""
-import hmac
-import json
+"""Bluetooth LE phone motion client. No LAN listener or internet transport."""
+import asyncio
 import math
-import secrets
-import subprocess
-import sys
+import re
+import struct
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
+from socketserver import TCPServer
+
+SERVICE = '78e7a600-7d35-4aa1-8b5f-565445c90001'
+AUTH = '78e7a600-7d35-4aa1-8b5f-565445c90002'
+MOTION = '78e7a600-7d35-4aa1-8b5f-565445c90003'
+
+class NumericHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+def decode_motion(data):
+    if len(data) != 8:
+        raise ValueError('Invalid motion packet')
+    pitch, roll = struct.unpack('<ff', data)
+    if any(not math.isfinite(v) or abs(v) > 180 for v in (pitch, roll)):
+        raise ValueError('Invalid motion angles')
+    return pitch, roll
+
 
 class PhoneBridge:
     def __init__(self):
-        self.lock = threading.Lock()
-        self.server = None
-        self.pin = ''
-        self.token = ''
-        self.expires = 0
-        self.attempts = 0
-        self.motion = {'pitch': 0, 'roll': 0, 'updated': 0}
+        self.lock = threading.RLock()
+        self.loop = None
+        self.future = None
+        self.devices = {}
+        self.state = {'enabled': False, 'connected': False, 'status': 'idle', 'pitch': 0, 'roll': 0, 'updated': 0}
 
     def snapshot(self):
         with self.lock:
-            return {'enabled': self.server is not None,
-                    'connected': bool(self.token) and time.time()-self.motion['updated'] < 2,
-                    'pitch': self.motion['pitch'], 'roll': self.motion['roll']}
+            data = dict(self.state)
+            data['connected'] = data['connected'] and time.monotonic()-data['updated'] < 2
+            return data
 
-    def accept(self, path, payload, bearer=''):
-        with self.lock:
-            if path == '/pair':
-                if self.attempts >= 5 or time.time() > self.expires or not self.pin:
-                    return 403, {'error': '맥에서 새 연결 코드를 발급하세요.'}
-                self.attempts += 1
-                pin = payload.get('pin')
-                if not isinstance(pin, str) or not hmac.compare_digest(pin, self.pin):
-                    return 403, {'error': '연결 코드가 다릅니다.'}
-                self.token = secrets.token_urlsafe(32)
-                self.pin = ''
-                self.session_expiry = time.time() + 3600
-                return 200, {'token': self.token}
-            if path == '/motion':
-                if not self.token or not hmac.compare_digest(bearer, 'Bearer '+self.token) or time.time() > self.session_expiry:
-                    return 403, {'error': '다시 연결하세요.'}
-                values = [payload.get('pitch'), payload.get('roll')]
-                if any(type(v) not in (int, float) or not math.isfinite(v) or abs(v)>180 for v in values):
-                    return 400, {'error': '잘못된 회전 값'}
-                self.motion = {'pitch': values[0], 'roll': values[1], 'updated': time.time()}
-                return 200, {'ok': True}
-            return 404, {'error': '찾을 수 없습니다.'}
+    def _loop(self):
+        if self.loop is None:
+            self.loop = asyncio.new_event_loop()
+            threading.Thread(target=self.loop.run_forever, daemon=True).start()
+        return self.loop
 
     def enable(self):
-        if self.server is None:
-            owner = self
-            class Receiver(BaseHTTPRequestHandler):
-                def log_message(self, *args): pass
-                def do_POST(self):
-                    try:
-                        size=int(self.headers.get('Content-Length','0'))
-                        if not 0<size<=1024: raise ValueError()
-                        data=json.loads(self.rfile.read(size))
-                        if not isinstance(data,dict): raise ValueError()
-                        code,result=owner.accept(self.path,data,self.headers.get('Authorization',''))
-                    except (ValueError,TypeError):
-                        code,result=400,{'error':'Invalid input'}
-                    body=json.dumps(result).encode()
-                    self.send_response(code);self.send_header('Content-Type','application/json')
-                    self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
-                def setup(self):
-                    super().setup();self.connection.settimeout(5)
-            self.server=ThreadingHTTPServer(('0.0.0.0',8766),Receiver)
-            threading.Thread(target=self.server.serve_forever,daemon=True).start()
         with self.lock:
-            self.pin=f'{secrets.randbelow(1000000):06d}'
-            self.token='';self.attempts=0;self.expires=time.time()+300
-            pin=self.pin
-        ips=[]
-        if sys.platform=='darwin':
-            for interface in ('en0','en1','en2'):
-                try:
-                    result=subprocess.run(['/usr/sbin/ipconfig','getifaddr',interface],capture_output=True,text=True,timeout=2)
-                    if result.returncode==0 and result.stdout.strip(): ips.append(result.stdout.strip())
-                except (OSError,subprocess.SubprocessError): pass
-        return {'pin':pin,'addresses':list(dict.fromkeys(ips)),'port':8766,'expires_in':300}
+            if self.future and not self.future.done():
+                raise ValueError('진행 중인 연결을 끊은 뒤 검색하세요.')
+            self.state.update(enabled=True, connected=False, status='scanning', error='')
+            self.future = asyncio.run_coroutine_threadsafe(self._discover(), self._loop())
+        return self.snapshot()
+
+    async def _discover(self):
+        try:
+            from bleak import BleakScanner
+            devices = await BleakScanner.discover(timeout=7, service_uuids=[SERVICE])
+            with self.lock:
+                self.devices = {d.address: d for d in devices}
+                self.state.update(status='ready', devices=[{'id': d.address, 'name': d.name or 'JARVIS Motion'} for d in devices])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            with self.lock:
+                self.state.update(status='error', error='Bluetooth 검색 실패: '+str(e))
+
+    def connect(self, address, pin):
+        if not isinstance(pin, str) or not re.fullmatch(r'[0-9]{6}', pin):
+            raise ValueError('휴대폰에 표시된 6자리 코드를 입력하세요.')
+        if not isinstance(address, str):
+            raise ValueError('검색 목록에서 휴대폰을 선택하세요.')
+        with self.lock:
+            if address not in self.devices:
+                raise ValueError('휴대폰을 먼저 검색하고 선택하세요.')
+            if self.future and not self.future.done():
+                raise ValueError('검색 또는 연결이 진행 중입니다.')
+            self.state.update(enabled=True, connected=False, status='connecting', error='')
+            self.future = asyncio.run_coroutine_threadsafe(self._connect(self.devices[address], pin), self._loop())
+        return self.snapshot()
+
+    async def _connect(self, device, pin):
+        try:
+            from bleak import BleakClient
+            async with BleakClient(device, timeout=20) as client:
+                await client.write_gatt_char(AUTH, pin.encode('ascii'), response=True)
+                await client.start_notify(MOTION, self._receive)
+                with self.lock:
+                    self.state.update(status='streaming')
+                while client.is_connected:
+                    await asyncio.sleep(.2)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            with self.lock:
+                self.state.update(status='error', error='Bluetooth 연결 실패: '+str(e))
+        finally:
+            with self.lock:
+                self.state['connected'] = False
+                if self.state['status'] != 'error':
+                    self.state['status'] = 'idle'
+
+    def _receive(self, characteristic, data):
+        try:
+            pitch, roll = decode_motion(data)
+        except ValueError:
+            return
+        with self.lock:
+            if self.state['enabled']:
+                self.state.update(connected=True, pitch=pitch, roll=roll, updated=time.monotonic())
 
     def stop(self):
-        if self.server:
-            self.server.shutdown();self.server.server_close();self.server=None
         with self.lock:
-            self.pin='';self.token='';self.motion['updated']=0
+            if self.future:
+                self.future.cancel()
+            self.state.update(enabled=False, connected=False, status='idle', updated=0)

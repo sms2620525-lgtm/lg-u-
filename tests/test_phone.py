@@ -1,29 +1,34 @@
-import time
+import asyncio
+import math
+import struct
+import sys
+import types
 import unittest
-from phone import PhoneBridge
+from unittest.mock import patch
+from phone import PhoneBridge, decode_motion, SERVICE, AUTH, MOTION
 
 class PhoneTests(unittest.TestCase):
-    def bridge(self):
-        b=PhoneBridge();b.pin='012345';b.expires=time.time()+300
-        return b
-    def test_pair_then_motion(self):
-        b=self.bridge();code,result=b.accept('/pair',{'pin':'012345'});self.assertEqual(code,200)
-        self.assertEqual(b.accept('/pair',{'pin':'012345'})[0],403)
-        self.assertEqual(b.accept('/motion',{'pitch':20,'roll':-30},'Bearer '+result['token'])[0],200)
-        self.assertTrue(b.snapshot()['connected'])
-        self.assertEqual(b.snapshot()['pitch'],20)
-    def test_unauthorized_and_invalid_motion(self):
-        b=self.bridge();token=b.accept('/pair',{'pin':'012345'})[1]['token']
-        self.assertEqual(b.accept('/motion',{'pitch':0,'roll':0},'wrong')[0],403)
-        for value in [float('nan'),float('inf'),True,181,'1']:
-            self.assertEqual(b.accept('/motion',{'pitch':value,'roll':0},'Bearer '+token)[0],400)
-        self.assertEqual(b.accept('/api/scan',{})[0],404)
-    def test_pair_lockout_and_expiration(self):
-        b=self.bridge()
-        for i in range(5): self.assertEqual(b.accept('/pair',{'pin':'000000'})[0],403)
-        self.assertEqual(b.accept('/pair',{'pin':'012345'})[0],403)
-        b=self.bridge();b.expires=0
-        self.assertEqual(b.accept('/pair',{'pin':'012345'})[0],403)
-    def test_stop_revokes(self):
-        b=self.bridge();token=b.accept('/pair',{'pin':'012345'})[1]['token'];b.stop()
-        self.assertEqual(b.accept('/motion',{'pitch':0,'roll':0},'Bearer '+token)[0],403)
+    def test_packets(self):
+        self.assertEqual(decode_motion(struct.pack('<ff',25,-12)),(25,-12))
+        for data in [b'',b'123',struct.pack('<ff',math.nan,0),struct.pack('<ff',181,0)]:
+            with self.assertRaises(ValueError): decode_motion(data)
+    def test_receive_and_disconnect(self):
+        b=PhoneBridge();b.state['enabled']=True;b._receive(None,struct.pack('<ff',20,30))
+        self.assertTrue(b.snapshot()['connected']);b.stop()
+        b._receive(None,struct.pack('<ff',20,30));self.assertFalse(b.snapshot()['connected'])
+    def test_validation(self):
+        b=PhoneBridge()
+        for pin in ['123','abcdef',123456]:
+            with self.assertRaises(ValueError):b.connect('device',pin)
+        with self.assertRaises(ValueError):b.connect('unknown','123456')
+    def test_ble_protocol(self):
+        calls=[]
+        class Client:
+            def __init__(self,device,**kwargs):self.is_connected=False
+            async def __aenter__(self):return self
+            async def __aexit__(self,*args):pass
+            async def write_gatt_char(self,uuid,data,response):calls.append((uuid,data,response))
+            async def start_notify(self,uuid,callback):calls.append(uuid);callback(None,struct.pack('<ff',1,2))
+        b=PhoneBridge();b.state['enabled']=True
+        with patch.dict(sys.modules,{'bleak':types.SimpleNamespace(BleakClient=Client)}):asyncio.run(b._connect('device','012345'))
+        self.assertEqual(calls,[(AUTH,b'012345',True),MOTION]);self.assertEqual(b.state['pitch'],1)

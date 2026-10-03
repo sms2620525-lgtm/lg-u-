@@ -6,8 +6,18 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 1
 fi
 python3 -m venv .build-venv
-.build-venv/bin/python -m pip install 'pyinstaller==6.22.2'
-.build-venv/bin/python -m PyInstaller --noconfirm --clean --windowed --name JarvisCyber --add-data 'index.html:.' --add-data 'cyber.js:.' --add-data 'cyber.css:.' app.py
+.build-venv/bin/python -m pip install 'pyinstaller==6.22.2' 'bleak==3.0.1'
+.build-venv/bin/python -m PyInstaller --noconfirm --clean --windowed --collect-submodules bleak --name JarvisCyber --add-data 'index.html:.' --add-data 'cyber.js:.' --add-data 'cyber.css:.' app.py
+.build-venv/bin/python - <<'PLIST'
+import plistlib
+from pathlib import Path
+p=Path('dist/JarvisCyber.app/Contents/Info.plist')
+with p.open('rb') as f: data=plistlib.load(f)
+data['NSBluetoothAlwaysUsageDescription']='휴대폰의 기울기를 Bluetooth로 받아 3D 화면을 회전합니다.'
+data['CFBundleIdentifier']='space.jarvis.cyber'
+with p.open('wb') as f: plistlib.dump(data,f)
+PLIST
+codesign --force --deep --sign - dist/JarvisCyber.app
 mkdir -p dist/dmg-stage
 cp -R dist/JarvisCyber.app dist/dmg-stage/
 ln -s /Applications dist/dmg-stage/Applications

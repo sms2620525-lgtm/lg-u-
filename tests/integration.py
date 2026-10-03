@@ -22,15 +22,12 @@ with tempfile.TemporaryDirectory() as directory:
         token=re.search("const token='([^']+)'",html)[1]
         def post(url,data,headers):
             request=urllib.request.Request(url,json.dumps(data).encode(),headers={'Content-Type':'application/json',**headers})
-            return json.load(urllib.request.urlopen(request,timeout=3))
+            return json.load(urllib.request.urlopen(request,timeout=10))
         local={'Origin':base,'X-Jarvis-Token':token}
-        pin=post(base+'/api/phone/enable',{},local)['pin']
-        remote=post('http://127.0.0.1:8766/pair',{'pin':pin},{})['token']
-        post('http://127.0.0.1:8766/motion',{'pitch':25,'roll':-12},{'Authorization':'Bearer '+remote})
-        state=json.load(urllib.request.urlopen(base+'/api/phone'))
-        assert state['connected'] and state['pitch']==25 and state['roll']==-12
-        post(base+'/api/phone/disable',{},local)
+        post(base+'/api/memories',{'text':'local integration'},local)
+        assert json.load(urllib.request.urlopen(base+'/api/memories'))['memories'][0]['text']=='local integration'
         assert not json.load(urllib.request.urlopen(base+'/api/phone'))['enabled']
-        print('PASS: real HTTP pairing, motion delivery, disconnect')
+        assert urllib.request.urlopen(base+'/cyber.js').status==200
+        print('PASS: local HTTP memory, static UI, Bluetooth idle status')
     finally:
         process.terminate();process.wait(timeout=5)
