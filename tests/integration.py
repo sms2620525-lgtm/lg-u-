@@ -17,6 +17,7 @@ with tempfile.TemporaryDirectory() as directory:
     )
     base = 'http://127.0.0.1:18765'
     try:
+        # Wait for server to start
         for attempt in range(50):
             try:
                 html = urllib.request.urlopen(base, timeout=1).read().decode()
@@ -28,45 +29,66 @@ with tempfile.TemporaryDirectory() as directory:
 
         token = re.search("const token='([^']+)'", html)[1]
 
-        def request_json(url, payload=None, headers=None, method=None):
-            body = None if payload is None else json.dumps(payload).encode()
-            headers = headers or {}
-            req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        # Setup password and get session cookie
+        setup_req = urllib.request.Request(
+            base + '/api/setup',
+            data=json.dumps({'password': 'testpass123'}).encode(),
+            headers={
+                'Content-Type': 'application/json',
+                'Origin': base,
+                'X-Jarvis-Token': token,
+            },
+            method='POST',
+        )
+        with urllib.request.urlopen(setup_req, timeout=10) as response:
+            setup_result = json.loads(response.read().decode())
+            if not setup_result.get('ok'):
+                raise AssertionError(f"Setup failed: {setup_result}")
+            # Extract session cookie from Set-Cookie header
+            set_cookie = response.headers.get('Set-Cookie')
+            if not set_cookie:
+                raise AssertionError('No Set-Cookie header in setup response')
+            session_cookie = set_cookie.split(';')[0]
+
+        # Helper function for authenticated requests
+        def authed_request(method, path, data=None):
+            url = base + path
+            body = json.dumps(data).encode() if data else None
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Origin': base,
+                    'X-Jarvis-Token': token,
+                    'Cookie': session_cookie,
+                },
+                method=method,
+            )
             with urllib.request.urlopen(req, timeout=10) as response:
                 text = response.read().decode()
                 return json.loads(text) if text else {}
 
-        # Set a password and keep the session cookie returned by the server.
-        setup_headers = {'Origin': base, 'X-Jarvis-Token': token}
-        setup_response = request_json(base + '/api/setup', {'password': 'testpass123'}, setup_headers, 'POST')
-        if setup_response.get('ok') is not True:
-            raise AssertionError(f"setup failed: {setup_response}")
+        # Post a memory
+        post_result = authed_request('POST', '/api/memories', {'text': 'local integration'})
+        if not post_result.get('ok'):
+            raise AssertionError(f"POST /api/memories failed: {post_result}")
 
-        session_cookie = None
-        # We need the raw response headers to read Set-Cookie, so use the lower-level opener.
-        setup_req = urllib.request.Request(
-            base + '/api/setup',
-            data=json.dumps({'password': 'testpass123'}).encode(),
-            headers={'Content-Type': 'application/json', **setup_headers},
-            method='POST',
-        )
-        with urllib.request.urlopen(setup_req, timeout=10) as response:
-            session_cookie = response.headers.get('Set-Cookie')
-            if not session_cookie:
-                raise AssertionError('No session cookie returned from /api/setup')
-            session_cookie = session_cookie.split(';', 1)[0]
+        # Verify memory was stored
+        memories = authed_request('GET', '/api/memories')
+        if not memories.get('memories') or memories['memories'][0]['text'] != 'local integration':
+            raise AssertionError(f"Memory check failed: {memories}")
 
-        auth_headers = {'Origin': base, 'X-Jarvis-Token': token, 'Cookie': session_cookie}
+        # Check phone status
+        phone_status = authed_request('GET', '/api/phone')
+        if phone_status.get('enabled') is not False:
+            raise AssertionError(f"Phone status check failed: {phone_status}")
 
-        request_json(base + '/api/memories', {'text': 'local integration'}, auth_headers, 'POST')
-        memories = request_json(base + '/api/memories', headers={'Cookie': session_cookie}, method='GET')
-        assert memories['memories'][0]['text'] == 'local integration'
-
-        phone_status = request_json(base + '/api/phone', headers={'Cookie': session_cookie}, method='GET')
-        assert phone_status['enabled'] is False
-
+        # Check static file
         static = urllib.request.urlopen(base + '/cyber.js', timeout=10)
-        assert static.status == 200
+        if static.status != 200:
+            raise AssertionError(f"Static file check failed with status {static.status}")
+
         print('PASS: local HTTP memory, static UI, Bluetooth idle status')
     except urllib.error.HTTPError as e:
         print(f'HTTP Error {e.code}: {e.reason}')
