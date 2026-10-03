@@ -1,19 +1,25 @@
 """JARVIS local prototype. Python 3.9+, no extra dependencies."""
 import json
 import os
-from pathlib import Path
 import secrets
 import sqlite3
 import subprocess
 import sys
 import threading
 import webbrowser
+from pathlib import Path
+
+from http.server import BaseHTTPRequestHandler
+
 from auth import Auth, AuthError, read_cookie, session_cookie_header, cleared_session_cookie_header
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT = Path(__file__).resolve().parent
+if getattr(sys, 'frozen', False):
+    ROOT = Path(sys._MEIPASS)
+else:
+    ROOT = Path(__file__).resolve().parent
+
 DATA = Path(os.environ.get('JARVIS_DATA_DIR', str(Path.home() / 'Library/Application Support/JarvisCyber' if sys.platform == 'darwin' else ROOT / 'data')))
 DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
 DB = DATA / 'jarvis.sqlite3'
@@ -21,14 +27,14 @@ legacy_db = ROOT / 'data' / 'jarvis.sqlite3'
 if not DB.exists() and legacy_db.exists() and legacy_db != DB:
     with sqlite3.connect(legacy_db) as old, sqlite3.connect(DB) as new:
         old.backup(new)
-TOKEN = secrets.token_urlsafe(32)  # per-process CSRF token, embedded in every HTML page
+TOKEN = secrets.token_urlsafe(32)
 PORT = int(os.environ.get('JARVIS_PORT', '8765'))
 ORIGIN = f'http://127.0.0.1:{PORT}'
 speech_lock = threading.Lock()
 speech = None
 scanner = Scanner(DATA / 'scans')
 phone = PhoneBridge()
-auth = Auth(DB)  # login is separate from the CSRF token: TOKEN proves "same page load", the session cookie proves "logged in"
+auth = Auth(DB)
 
 def connect():
     conn = sqlite3.connect(DB)
@@ -66,14 +72,12 @@ class Handler(BaseHTTPRequestHandler):
         return auth.verify_session(read_cookie(self.headers.get('Cookie'), 'jarvis_session'))
 
     def page(self, name):
-        """Serve an HTML file from ROOT with __TOKEN__ filled in."""
         return self.send(200, (ROOT / name).read_text().replace('__TOKEN__', TOKEN), 'text/html; charset=utf-8')
 
     def do_GET(self):
         if self.headers.get('Host') != f'127.0.0.1:{PORT}':
             return self.send(403, {'error': '잘못된 접근 주소입니다.'})
 
-        # --- auth gate for the page routes ---------------------------------
         if self.path == '/setup':
             if auth.has_password():
                 return self.redirect('/' if self.is_authed() else '/login')
@@ -95,7 +99,6 @@ class Handler(BaseHTTPRequestHandler):
             kind = 'application/javascript' if self.path.endswith('.js') else 'text/css'
             return self.send(200, (ROOT / self.path[1:]).read_text(), kind + '; charset=utf-8')
 
-        # --- everything past this point is a data API: require a session ----
         if self.path.startswith('/api/'):
             if not self.is_authed():
                 return self.send(401, {'error': '로그인이 필요합니다.'})
@@ -124,7 +127,6 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError()
 
-            # --- auth endpoints: no session required yet, that's the point ---
             if self.path == '/api/setup':
                 if auth.has_password():
                     return self.send(400, {'error': '이미 비밀번호가 설정되어 있습니다.'})
@@ -147,7 +149,6 @@ class Handler(BaseHTTPRequestHandler):
                 auth.revoke_session(read_cookie(self.headers.get('Cookie'), 'jarvis_session'))
                 return self.send(200, {'ok': True}, headers={'Set-Cookie': cleared_session_cookie_header()})
 
-            # --- everything else needs an existing, logged-in session --------
             if not self.is_authed():
                 return self.send(401, {'error': '로그인이 필요합니다.'})
 
