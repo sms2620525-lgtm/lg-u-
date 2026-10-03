@@ -1,8 +1,8 @@
-name: Build macOS DMG
+name: Build Android Remote
 on:
   push:
     branches: [main]
-    paths: ['*.py', '*.html', '*.js', '*.css', 'build-macos.sh', '.github/workflows/macos.yml']
+    paths: ['android/**', 'tests/**', '.github/workflows/android.yml']
   workflow_dispatch:
 
 permissions:
@@ -10,39 +10,13 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - run: python3 -m unittest discover -s tests
-      - run: python3 tests/integration.py
-      - run: bash build-macos.sh
-
-      - name: Verify bundle starts
-        shell: bash
-        run: |
-          dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --no-browser &
-          APP_PID=$!
-          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
-          for attempt in {1..20}; do
-            if curl -L --fail --silent http://127.0.0.1:8765/ > /tmp/jarvis-page; then
-              break
-            fi
-            sleep 1
-          done
-          grep -q 'JARVIS' /tmp/jarvis-page
-          hdiutil verify dist/*.dmg
-
+      - uses: android-actions/setup-android@v3
+      - run: cd android && ./gradlew build
       - uses: actions/upload-artifact@v4
         with:
-          name: JarvisCyber-${{ runner.arch }}
-          path: dist/*.dmg
-          if-no-files-found: error
+          name: app-release
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: ignore
