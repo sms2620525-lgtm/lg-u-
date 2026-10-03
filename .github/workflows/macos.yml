@@ -20,8 +20,7 @@ jobs:
           python-version: '3.12'
       - run: python3 -m unittest discover -s tests
       - run: python3 tests/integration.py
-      - run: bash build-macos.sh
-      -- name: Verify bundle starts
+      - name: Verify bundle starts
   shell: bash
   run: |
     dist/JarvisCyber.app/Contents/MacOS/JarvisCyber --no-browser &
