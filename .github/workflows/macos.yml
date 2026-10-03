@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel]
+        os: [macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +19,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m unittest discover -s tests
+      - run: python3 tests/integration.py
       - run: bash build-macos.sh
       - name: Verify bundle starts
         shell: bash

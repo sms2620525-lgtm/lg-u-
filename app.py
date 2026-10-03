@@ -9,6 +9,7 @@ import sys
 import threading
 import webbrowser
 from security import Scanner
+from phone import PhoneBridge
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parent
@@ -25,6 +26,7 @@ ORIGIN = f'http://127.0.0.1:{PORT}'
 speech_lock = threading.Lock()
 speech = None
 scanner = Scanner(DATA / 'scans')
+phone = PhoneBridge()
 
 def connect():
     conn = sqlite3.connect(DB)
@@ -58,6 +60,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ('/cyber.js', '/cyber.css'):
             kind = 'application/javascript' if self.path.endswith('.js') else 'text/css'
             return self.send(200, (ROOT / self.path[1:]).read_text(), kind + '; charset=utf-8')
+        if self.path == '/api/phone':
+            return self.send(200, phone.snapshot())
         if self.path == '/api/scan':
             return self.send(200, scanner.snapshot())
         if self.path == '/api/memories':
@@ -79,7 +83,11 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError()
-            if self.path == '/api/scan':
+            if self.path == '/api/phone/enable':
+                return self.send(200, phone.enable())
+            elif self.path == '/api/phone/disable':
+                phone.stop()
+            elif self.path == '/api/scan':
                 return self.send(200, scanner.start(payload.get('target'), payload.get('terminal') is True))
             elif self.path == '/api/scan/cancel':
                 scanner.cancel()
@@ -130,6 +138,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         pass
     finally:
+        phone.stop()
         scanner.cancel()
         server.server_close()
         if speech and speech.poll() is None:

@@ -14,3 +14,9 @@ const Speech=window.SpeechRecognition||window.webkitSpeechRecognition;
 $('dictate').onclick=()=>{if(!Speech){scanStatus('이 브라우저는 음성 입력을 지원하지 않아요. IP를 직접 입력해 주세요.');return;}const recognition=new Speech();recognition.lang='ko-KR';recognition.onresult=e=>{let text=e.results[0][0].transcript.trim().replace(/점|닷/g,'.').replace(/\s/g,'');$('target').value=text;scanStatus('인식된 IP를 확인하고 점검 시작을 눌러 주세요.');};recognition.onerror=e=>scanStatus('음성 입력 실패: '+e.error);try{recognition.start();}catch(e){scanStatus(e.message);}};
 $('quit').onclick=async()=>{try{await api('quit',{});document.body.textContent='JARVIS를 종료했어요. 이 창을 닫아도 됩니다.';}catch(e){scanStatus(e.message);}};
 draw([],null);poll();
+
+let phoneOffset={pitch:0,roll:0}, phoneLatest=null, phoneWasConnected=false, pairingText='';
+$('phone-enable').onclick=async()=>{try{const d=await api('phone/enable',{});pairingText=`맥 IP: ${d.addresses.join(' 또는 ')||'시스템 설정 → Wi-Fi → 세부사항에서 확인'} · 코드: ${d.pin} (5분 유효)`;$('phone-status').textContent=pairingText;}catch(e){$('phone-status').textContent=e.message;}};
+$('phone-disable').onclick=async()=>{try{await api('phone/disable',{});pairingText='';$('phone-status').textContent='연결 해제됨';}catch(e){$('phone-status').textContent=e.message;}};
+$('phone-center').onclick=()=>{if(phoneLatest)phoneOffset={pitch:phoneLatest.pitch,roll:phoneLatest.roll};};
+async function phonePoll(){try{const d=await api('phone');if(d.connected){phoneLatest=d;const wrap=n=>((n+180)%360+360)%360-180;window.jarvisOrientation({pitch:wrap(d.pitch-phoneOffset.pitch),roll:wrap(d.roll-phoneOffset.roll)});$('phone-status').textContent='휴대폰 연결됨 · 기울여 화면을 회전하세요.';}else if(phoneWasConnected){$('phone-status').textContent=d.enabled?'휴대폰 신호 대기 중 · 휴대폰 앱을 화면에 띄워 주세요.':'연결 해제됨';}phoneWasConnected=d.connected;}catch(e){}setTimeout(phonePoll,100);}phonePoll();
