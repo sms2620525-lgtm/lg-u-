@@ -12,14 +12,13 @@ python3 -m venv .build-venv
   --clean \
   --windowed \
   --collect-submodules bleak \
-  --collect-all auth \
-  --collect-all security \
-  --collect-all phone \
   --hidden-import=auth \
   --hidden-import=security \
   --hidden-import=phone \
   --name JarvisCyber \
   --add-data 'index.html:.' \
+  --add-data 'setup.html:.' \
+  --add-data 'login.html:.' \
   --add-data 'cyber.js:.' \
   --add-data 'cyber.css:.' \
   app.py
@@ -33,7 +32,8 @@ data['CFBundleIdentifier']='space.jarvis.cyber'
 with p.open('wb') as f: plistlib.dump(data,f)
 PLIST
 codesign --force --deep --sign - dist/JarvisCyber.app
-mkdir -p dist/dmg-stage
-cp -R dist/JarvisCyber.app dist/dmg-stage/
-ln -s /Applications dist/dmg-stage/Applications
-hdiutil create -volname JarvisCyber -srcfolder dist/dmg-stage -ov -format UDZO "dist/JarvisCyber-$(uname -m).dmg"
+stage=$(mktemp -d "${TMPDIR:-/tmp}/jarvis-dmg.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+cp -R dist/JarvisCyber.app "$stage/"
+ln -s /Applications "$stage/Applications"
+hdiutil create -volname JarvisCyber -srcfolder "$stage" -ov -format UDZO "dist/JarvisCyber-$(uname -m).dmg"

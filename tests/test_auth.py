@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import auth
 
 class AuthTests(unittest.TestCase):
@@ -25,6 +26,18 @@ class AuthTests(unittest.TestCase):
         for _ in range(auth.MAX_ATTEMPTS):
             self.assertFalse(self.a.verify_password('wrong'))
         with self.assertRaises(auth.AuthError): self.a.verify_password('correct-horse-battery')
+    def test_invalid_password_types_do_not_crash(self):
+        self.a.set_password('correct-horse-battery')
+        for value in [None, 123, [], {}, 'x'*201]:
+            self.assertFalse(self.a.verify_password(value))
+    def test_expired_lockout_starts_new_attempt_window(self):
+        self.a.set_password('correct-horse-battery')
+        with patch('auth.time.time', return_value=1000):
+            for _ in range(auth.MAX_ATTEMPTS):
+                self.a.verify_password('wrong')
+        with patch('auth.time.time', return_value=1000+auth.LOCKOUT_SECONDS+1):
+            self.assertFalse(self.a.verify_password('wrong'))
+            self.assertTrue(self.a.verify_password('correct-horse-battery'))
     def test_session_lifecycle(self):
         token=self.a.issue_session()
         self.assertTrue(self.a.verify_session(token))

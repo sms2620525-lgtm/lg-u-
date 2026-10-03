@@ -96,6 +96,8 @@ class Auth:
             conn.execute('DELETE FROM auth_attempt')
 
     def verify_password(self, password: str) -> bool:
+        if not isinstance(password, str) or len(password) > 200:
+            return False
         now = time.time()
         with self._connect() as conn:
             attempt = conn.execute('SELECT failures, locked_until FROM auth_attempt WHERE id = 1').fetchone()
@@ -111,7 +113,7 @@ class Auth:
             if ok:
                 conn.execute('DELETE FROM auth_attempt WHERE id = 1')
             else:
-                failures = (attempt['failures'] if attempt else 0) + 1
+                failures = (attempt['failures'] if attempt and not attempt['locked_until'] else 0) + 1
                 locked_until = now + LOCKOUT_SECONDS if failures >= MAX_ATTEMPTS else 0
                 conn.execute(
                     'INSERT INTO auth_attempt (id, failures, locked_until) VALUES (1, ?, ?) '

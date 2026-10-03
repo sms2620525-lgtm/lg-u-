@@ -1,6 +1,9 @@
-"""CI loopback integration; does not scan any external host."""
+"""Run the same real HTTP auth lifecycle against source and the packaged app."""
+import argparse
+import http.cookiejar
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -9,90 +12,69 @@ import time
 import urllib.error
 import urllib.request
 
-
+parser = argparse.ArgumentParser()
+parser.add_argument('--executable')
+args = parser.parse_args()
+command = [str(Path(args.executable).resolve())] if args.executable else [sys.executable, 'app.py']
+base = 'http://127.0.0.1:18765'
 with tempfile.TemporaryDirectory() as directory:
-    process = subprocess.Popen(
-        [sys.executable, 'app.py', '--no-browser'],
-        env={**os.environ, 'JARVIS_DATA_DIR': directory, 'JARVIS_PORT': '18765'},
-    )
-    base = 'http://127.0.0.1:18765'
-    try:
-        # Wait for server to start
-        for attempt in range(50):
+    env = {**os.environ, 'JARVIS_DATA_DIR': directory, 'JARVIS_PORT': '18765'}
+    cookies = http.cookiejar.CookieJar()
+    client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+    process = None
+    token = ''
+    def start():
+        global process, token
+        process = subprocess.Popen(command + ['--no-browser'], env=env)
+        for _ in range(100):
+            if process.poll() is not None:
+                raise AssertionError(f'App exited: {process.returncode}')
             try:
-                html = urllib.request.urlopen(base, timeout=1).read().decode()
-                break
+                with client.open(base, timeout=1) as response:
+                    html = response.read().decode()
+                    token = re.search("const token='([^']+)'", html)[1]
+                    return response.url, html
             except OSError:
                 time.sleep(.1)
-        else:
-            raise AssertionError('Server did not start')
-
-        token = re.search("const token='([^']+)'", html)[1]
-
-        # Setup password and get session cookie
-        setup_req = urllib.request.Request(
-            base + '/api/setup',
-            data=json.dumps({'password': 'testpass123'}).encode(),
-            headers={
-                'Content-Type': 'application/json',
-                'Origin': base,
-                'X-Jarvis-Token': token,
-            },
-            method='POST',
-        )
-        with urllib.request.urlopen(setup_req, timeout=10) as response:
-            setup_result = json.loads(response.read().decode())
-            if not setup_result.get('ok'):
-                raise AssertionError(f"Setup failed: {setup_result}")
-            # Extract session cookie from Set-Cookie header
-            set_cookie = response.headers.get('Set-Cookie')
-            if not set_cookie:
-                raise AssertionError('No Set-Cookie header in setup response')
-            session_cookie = set_cookie.split(';')[0]
-
-        # Helper function for authenticated requests
-        def authed_request(method, path, data=None):
-            url = base + path
-            body = json.dumps(data).encode() if data else None
-            req = urllib.request.Request(
-                url,
-                data=body,
-                headers={
-                    'Content-Type': 'application/json',
-                    'Origin': base,
-                    'X-Jarvis-Token': token,
-                    'Cookie': session_cookie,
-                },
-                method=method,
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                text = response.read().decode()
-                return json.loads(text) if text else {}
-
-        # Post a memory
-        post_result = authed_request('POST', '/api/memories', {'text': 'local integration'})
-        if not post_result.get('ok'):
-            raise AssertionError(f"POST /api/memories failed: {post_result}")
-
-        # Verify memory was stored
-        memories = authed_request('GET', '/api/memories')
-        if not memories.get('memories') or memories['memories'][0]['text'] != 'local integration':
-            raise AssertionError(f"Memory check failed: {memories}")
-
-        # Check phone status
-        phone_status = authed_request('GET', '/api/phone')
-        if phone_status.get('enabled') is not False:
-            raise AssertionError(f"Phone status check failed: {phone_status}")
-
-        # Check static file
-        static = urllib.request.urlopen(base + '/cyber.js', timeout=10)
-        if static.status != 200:
-            raise AssertionError(f"Static file check failed with status {static.status}")
-
-        print('PASS: local HTTP memory, static UI, Bluetooth idle status')
-    except urllib.error.HTTPError as e:
-        print(f'HTTP Error {e.code}: {e.reason}')
-        raise
+        raise AssertionError('App did not start')
+    def call(path, data=None, expected=200):
+        request = urllib.request.Request(base + path, None if data is None else json.dumps(data).encode(),
+            headers={'Content-Type': 'application/json', 'Origin': base, 'X-Jarvis-Token': token})
+        try:
+            response = client.open(request, timeout=10)
+        except urllib.error.HTTPError as e:
+            response = e
+        with response:
+            text = response.read().decode()
+            assert response.code == expected, (path, response.code, text)
+            return json.loads(text) if response.headers.get_content_type() == 'application/json' else text
+    try:
+        url, html = start()
+        assert url.endswith('/setup') and 'JARVIS' in html
+        call('/api/memories', expected=401)
+        call('/api/setup', {'password': 'testpass123'})
+        assert 'phone-enable' in call('/')
+        for asset in ('/cyber.js', '/cyber.css'):
+            assert call(asset)
+        call('/api/memories', {'text': 'preserve after restart'})
+        call('/api/logout', {})
+        assert 'current-password' in call('/')
+        call('/api/memories', expected=401)
+        call('/api/login', {'password': None}, expected=401)
+        call('/api/login', {'password': 'wrong'}, expected=401)
+        call('/api/login', {'password': 'testpass123'})
+        assert call('/api/memories')['memories'][0]['text'] == 'preserve after restart'
+        assert not call('/api/phone')['enabled']
+        call('/api/logout', {})
+        process.terminate(); process.wait(timeout=5)
+        url, html = start()
+        assert url.endswith('/login')
+        call('/api/login', {'password': 'testpass123'})
+        rows = call('/api/memories')['memories']
+        assert len(rows) == 1 and rows[0]['text'] == 'preserve after restart'
+        call('/api/delete', {'id': rows[0]['id']})
+        assert not call('/api/memories')['memories']
+        print('PASS: setup, logout/login, bad input, assets, restart persistence, memory CRUD')
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        if process and process.poll() is None:
+            process.terminate(); process.wait(timeout=5)
