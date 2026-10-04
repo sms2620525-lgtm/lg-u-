@@ -1,4 +1,5 @@
 (() => {
+  let provider='chatgpt', assistantSettings=null, routerModels=[], routerLoaded=false, settingsBusy=false;
   let dashboard=false, accountId=null, accountReady=false, modelLoadedFor=null;
   let wakeEnabled=false, micMode='off', micRunning=false, micSeq=0, waitingUntil=0;
   let sending=false, chatBusy=false, lastTurn=-1, historyKey='', readTurn=-1;
@@ -21,10 +22,10 @@
   window.stopConversationMic=async()=>{wakeEnabled=false;updateWakeButton();await api('wake/disable',{});await pauseMic();};
   window.listenForIP=async()=>{if(speaking||chatBusy){error('응답을 중지한 뒤 IP를 입력하세요.');return;}error('');await startMic('ip');};
   $('chat-wake').onclick=async()=>{try{const d=await api(wakeEnabled?'wake/disable':'wake/enable',{});wakeEnabled=d.enabled;updateWakeButton();error('');}catch(e){error(e.message);}};
-  $('chat-mic').onclick=async()=>{if(!accountReady){error('먼저 ChatGPT 계정을 연결해 주세요.');return;}if(micRunning&&micMode==='direct'){await pauseMic();await resumeWake();return;}if(chatBusy||speaking){error('응답을 중지한 뒤 말씀해 주세요.');return;}await startMic('direct');};
+  $('chat-mic').onclick=async()=>{if(!accountReady){error('AI 연결과 모델 선택을 먼저 완료해 주세요.');return;}if(micRunning&&micMode==='direct'){await pauseMic();await resumeWake();return;}if(chatBusy||speaking){error('응답을 중지한 뒤 말씀해 주세요.');return;}await startMic('direct');};
   async function stopAll(){voiceEpoch++;speechQueue=[];speaking=false;chatBusy=false;sending=false;await pauseMic();await api('chat/cancel',{});await api('stop',{});state('STANDBY');}
   $('chat-stop').onclick=async()=>{try{await stopAll();await resumeWake();}catch(e){error(e.message);}};
-  async function send(text){text=text.trim();if(!text||sending||chatBusy)return;if(!accountReady){error('먼저 ChatGPT 계정을 연결해 주세요.');return;}sending=true;error('');$('chat-send').disabled=true;
+  async function send(text){text=text.trim();if(!text||sending||chatBusy)return;if(!accountReady){error('AI 연결과 모델 선택을 먼저 완료해 주세요.');return;}sending=true;error('');$('chat-send').disabled=true;
     try{await pauseMic();voiceEpoch++;speechQueue=[];speaking=false;await api('stop',{});state('THINKING');listen('답변을 준비하고 있어요.');const r=await api('chat',{text});lastTurn=r.turn;chatBusy=true;$('chat-input').value='';}
     catch(e){error(e.message);state('STANDBY');}
     finally{sending=false;$('chat-send').disabled=chatBusy;if(!chatBusy)await resumeWake();}
@@ -54,17 +55,27 @@
       else if(waitingUntil>Date.now()){waitingUntil=0;await send(text);break;}
     }
   }}catch(e){error(e.message);}setTimeout(micPoll,250);}
-  async function updateAccount(d){accountReady=d.connected&&d.plan_enabled;const changed=d.active!==accountId;accountId=d.active;$('account-status').textContent=d.pending?'공식 로그인 페이지에서 인증을 마치세요.':d.connected?(d.email+(d.plan_enabled?' · ChatGPT 연결됨':' · 요금제 사용 권한이 필요해요.')):'ChatGPT 계정을 연결하면 대화할 수 있어요.';if(d.error)error(d.error);
+  async function updateAccount(d){accountReady=provider==='openrouter'?Boolean(assistantSettings?.configured&&assistantSettings?.model):d.connected&&d.plan_enabled;const changed=d.active!==accountId;accountId=d.active;$('account-status').textContent=provider==='openrouter'?(accountReady?'OpenRouter 연결 준비 완료 · '+assistantSettings.model:'OpenRouter 키를 저장하고 모델을 선택해 주세요.'):d.pending?'공식 로그인 페이지에서 인증을 마치세요.':d.connected?(d.email+(d.plan_enabled?' · ChatGPT 연결됨':' · 요금제 사용 권한이 필요해요.')):'ChatGPT 계정을 연결하면 대화할 수 있어요.';if(provider==='chatgpt'&&d.error)error(d.error);
     const options=JSON.stringify(d.accounts);if($('account-picker').dataset.options!==options){$('account-picker').dataset.options=options;$('account-picker').replaceChildren(new Option('새 ChatGPT 계정 연결',''));for(const a of d.accounts)$('account-picker').add(new Option(a.label,a.id));$('account-picker').value=d.active||'';}
     if(changed){historyKey='';modelLoadedFor=null;}
-    if(accountReady&&modelLoadedFor!==d.active){modelLoadedFor=d.active;try{const m=await api('account/models',{});$('chat-model').replaceChildren();for(const x of m.models)$('chat-model').add(new Option(x.name,x.id));$('chat-model').value=m.model;}catch(e){error(e.message);}}
+    if(provider==='chatgpt'&&accountReady&&modelLoadedFor!==d.active){modelLoadedFor=d.active;try{const m=await api('account/models',{});$('chat-model').replaceChildren();for(const x of m.models)$('chat-model').add(new Option(x.name,x.id));$('chat-model').value=m.model;}catch(e){error(e.message);}}
   }
   $('chatgpt-login').onclick=async()=>{try{error('');await api('account/login',{client:$('account-picker').value||null});$('account-status').textContent='공식 로그인 페이지에서 인증을 마치세요.';}catch(e){error(e.message);}};
   $('account-switch').onclick=async()=>{try{await stopAll();modelLoadedFor=null;const client=$('account-picker').value;if(client)await updateAccount(await api('account/switch',{client}));else $('chatgpt-login').click();}catch(e){error(e.message);}};
   $('chatgpt-logout').onclick=async()=>{try{wakeEnabled=false;updateWakeButton();await stopAll();const d=await api('account/logout',{});error(d.notice||'ChatGPT에서 로그아웃했어요.');modelLoadedFor=null;}catch(e){error(e.message);}};
   $('account-usage').onclick=()=>api('account/usage',{}).catch(e=>error(e.message));
-  $('chat-model').onchange=()=>api('account/model',{model:$('chat-model').value}).catch(e=>error(e.message));
-  async function accountPoll(){try{await updateAccount(await api('account'));}catch(e){error(e.message);}setTimeout(accountPoll,2000);}
-  async function wakePoll(){try{const d=await api('wake');wakeEnabled=d.enabled;updateWakeButton();if(d.error)error(d.error);if(d.enabled&&d.phase!=='manual'){const labels={waiting:'박수 두 번으로 깨우세요 · 창을 닫아도 대기합니다.',greeting:'네, 듣고 있어요.',listening:'듣고 있어요. 말씀해 주세요.',thinking:'답변을 준비하고 있어요.',speaking:'답변을 읽고 있어요.'};listen(labels[d.phase]||'');state(({waiting:'STANDBY',greeting:'SPEAKING',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'})[d.phase]||'STANDBY');}}catch(e){error(e.message);}setTimeout(wakePoll,500);}
+  $('chat-model').onchange=async()=>{try{if(provider==='openrouter'){await saveAssistant({model:$('chat-model').value});}else await api('account/model',{model:$('chat-model').value});}catch(e){error(e.message);}};
+  function renderRouterModels(){const query=$('model-search').value.trim().toLowerCase();$('chat-model').replaceChildren(new Option('OpenRouter 모델을 선택하세요',''));for(const m of routerModels){if(query&&!`${m.name} ${m.id}`.toLowerCase().includes(query)&&m.id!==assistantSettings?.model)continue;const p=m.pricing||{};const free=Number(p.prompt)===0&&Number(p.completion)===0;const cost=free?' · 무료':Number.isFinite(Number(p.prompt))&&Number.isFinite(Number(p.completion))?` · 입력 $${(Number(p.prompt)*1e6).toFixed(2)} / 출력 $${(Number(p.completion)*1e6).toFixed(2)} (100만 토큰)` : ''; $('chat-model').add(new Option(m.name+' · '+m.id+cost,m.id));}if(assistantSettings?.model&&!routerModels.some(m=>m.id===assistantSettings.model))$('chat-model').add(new Option(assistantSettings.model+' · 저장된 모델',assistantSettings.model));$('chat-model').value=assistantSettings?.model||'';}
+  async function loadRouterModels(){const d=await api('openrouter/models',{});routerModels=d.models;routerLoaded=true;renderRouterModels();}
+  async function applyAssistant(d){const changed=provider!==d.provider;assistantSettings=d;provider=d.provider;$('ai-provider').value=provider;$('ai-tone').value=d.tone;$('openrouter-settings').hidden=provider!=='openrouter';$('chatgpt-controls').hidden=provider!=='chatgpt';$('openrouter-status').textContent=d.configured?'API 키가 키체인에 저장되어 있습니다.':'저장된 API 키가 없습니다.';if(changed){historyKey='';modelLoadedFor=null;readTurn=-1;lastTurn=-1;$('chat-model').replaceChildren(new Option('모델을 선택하세요',''));}if(provider==='openrouter'){accountReady=Boolean(d.configured&&d.model);if(!routerLoaded)await loadRouterModels();else if(changed)renderRouterModels();}}
+  async function saveAssistant(payload){settingsBusy=true;try{await stopAll();await applyAssistant(await api('assistant',payload));wakeEnabled=false;updateWakeButton();$('assistant-status').textContent='설정이 저장되었습니다. 박수 대기는 다시 켜 주세요.';}finally{settingsBusy=false;}}
+  $('ai-provider').onchange=()=>saveAssistant({provider:$('ai-provider').value}).catch(e=>{error(e.message);$('ai-provider').value=provider;});
+  $('ai-tone').onchange=()=>saveAssistant({tone:$('ai-tone').value}).catch(e=>error(e.message));
+  $('model-search').oninput=renderRouterModels;
+  $('models-refresh').onclick=()=>loadRouterModels().catch(e=>error(e.message));
+  $('openrouter-save').onclick=async()=>{const key=$('openrouter-key').value;$('openrouter-key').value='';settingsBusy=true;$('openrouter-save').disabled=true;try{await stopAll();await applyAssistant(await api('openrouter/key',{key}));error('');$('assistant-status').textContent='키 확인과 저장을 완료했습니다. 모델을 선택하세요.';}catch(e){error(e.message);}finally{settingsBusy=false;$('openrouter-save').disabled=false;}};
+  $('openrouter-delete').onclick=async()=>{settingsBusy=true;try{await stopAll();await applyAssistant(await api('openrouter/delete-key',{}));}catch(e){error(e.message);}finally{settingsBusy=false;}};
+  async function accountPoll(){try{if(!settingsBusy)await applyAssistant(await api('assistant'));await updateAccount(await api('account'));}catch(e){error(e.message);}setTimeout(accountPoll,2000);}
+  async function wakePoll(){try{const d=await api('wake');wakeEnabled=d.enabled;updateWakeButton();if(provider==='chatgpt'&&d.error)error(d.error);if(d.enabled&&d.phase!=='manual'){const labels={waiting:'박수 두 번으로 깨우세요 · 창을 닫아도 대기합니다.',greeting:'네, 듣고 있어요.',listening:'듣고 있어요. 말씀해 주세요.',thinking:'답변을 준비하고 있어요.',speaking:'답변을 읽고 있어요.'};listen(labels[d.phase]||'');state(({waiting:'STANDBY',greeting:'SPEAKING',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'})[d.phase]||'STANDBY');}}catch(e){error(e.message);}setTimeout(wakePoll,500);}
   chatPoll();voicePoll();micPoll();accountPoll();wakePoll();
 })();

@@ -4,7 +4,8 @@ import time
 
 
 class WakeController:
-    def __init__(self, microphone, voice, conversation, account):
+    def __init__(self, microphone, voice, conversation, account, providers=None):
+        self.providers = providers
         self.mic, self.voice, self.chat, self.account = microphone, voice, conversation, account
         self.lock = threading.RLock()
         self.enabled = False
@@ -26,9 +27,9 @@ class WakeController:
 
     def enable(self):
         with self.lock:
-            status = self.account.public()
+            status = self.providers.ready() if self.providers else self.account.public()
             if not status.get('connected') or not status.get('plan_enabled'):
-                raise ValueError('먼저 ChatGPT 계정을 연결해 주세요.')
+                raise ValueError('AI 연결과 모델 선택을 먼저 완료해 주세요.')
             if not self.voice.snapshot().get('configured'):
                 raise ValueError('먼저 Fish Audio API 키를 설정해 주세요.')
             if not self.enabled:
@@ -72,7 +73,7 @@ class WakeController:
                     self.seq = event['seq']
                     if self.phase == 'waiting' and event['type'] == 'clap_pair':
                         self.mic.stop()
-                        self.voice.speak('네, 듣고 있어요.')
+                        self.voice.speak(self.providers.greeting() if self.providers else '네, 듣고 있어요.')
                         self.phase = 'greeting'
                         return
                     if self.phase == 'listening' and event['type'] == 'utterance' and event.get('text', '').strip():

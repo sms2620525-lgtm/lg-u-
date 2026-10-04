@@ -124,3 +124,15 @@ Wi-Fi/인터넷 연결은 필요하지 않습니다. 시스템 Bluetooth 설정�
 ChatGPT 자격 증명은 키체인에, 계정 메타데이터는 Supabase에, 기기 식별자는 키체인에 저장합니다. state·PKCE·nonce와 ID 토큰 서명/issuer/audience/만료를 검사합니다. 계정별 대화는 Supabase에 분리 저장합니다. 기존 ChatGPT 웹 대화는 가져오지 않습니다. 최근 대화와 저장한 기억을 OpenAI에 전달하며, 읽을 답변은 Fish Audio에 전달합니다. ChatGPT 설정의 **사용량 관리**에서 앱 권한과 요금제 사용량을 확인할 수 있습니다. 계정/요금제의 지원 여부에 따라 로그인이 되더라도 추론 권한이 없을 수 있습니다.
 
 검증: OAuth 보안/갱신과 스트리밍 성공·실패는 모의 서버 응답으로 테스트합니다. 실제 사용자 ChatGPT 로그인·사용 권한 승인·마이크 입력은 설치 후 본인이 완료해야 합니다.
+
+## OpenRouter · 말투 선택
+
+대화 화면의 **AI 연결 · 말투 설정**에서 ChatGPT 또는 OpenRouter를 선택합니다. OpenRouter를 선택한 뒤 API 키를 입력하고 **키 확인 · 저장**을 누르세요. `/key`로 키를 확인하며 검증 과정에서 유료 답변을 생성하지 않습니다. 모델 목록은 OpenRouter `/models`에서 가져오고, 텍스트 대화 모델을 이름·ID로 검색한 뒤 대화 입력창의 모델 목록에서 직접 선택합니다. 표시 가격은 목록의 100만 토큰당 입력/출력 가격이며 추가 과금 항목은 포함하지 않습니다. OpenRouter 사용료는 ChatGPT 구독과 별도입니다.
+
+기본 말투는 차분하고 간결한 자비스 존댓말이며, 친근한 반말 / 정중하고 상세한 말투로 바꿀 수 있습니다. 말투는 다음 응답과 박수 호출 인사부터 적용됩니다. Fish Audio 목소리 모델 자체는 바뀌지 않습니다. OpenRouter도 기존 음성 입력·답변 읽기·창을 닫은 상태의 박수 대기를 사용합니다. 서비스·모델·키·말투 변경 시 진행 중 응답과 대기를 중단하므로 호출 대기는 다시 켜 주세요.
+
+선택한 서비스·모델·말투는 기존 사용자별 Supabase settings 레코드에 저장합니다. API 키는 사용자 ID별 macOS Keychain에만 저장하며 앱 화면이나 저장소로 반환하지 않습니다. ChatGPT 대화와 OpenRouter 대화는 별도로 저장합니다. OpenRouter를 선택하면 질문·최근 대화·기억은 OpenRouter 및 해당 모델 제공자에게 전달됩니다.
+
+검증: 모델 목록 실응답 구조 확인, 모의 스트림 성공/실패 및 키 검증/삭제/계정 격리 테스트. 실제 사용자 키로 유료 추론을 호출하는 검증은 하지 않습니다.
+
+참고: https://openrouter.ai/docs/api_reference/streaming · https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties

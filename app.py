@@ -19,6 +19,7 @@ from voice import Voice
 from chatgpt import ChatGPT, Conversation
 from microphone import Microphone
 from wake import WakeController
+from providers import Providers
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
 from cloud import Cloud, RuntimeAuth
@@ -58,8 +59,9 @@ if LOCAL_TEST:
     with connect() as conn:
         conn.execute('CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
     os.chmod(DB, 0o600)
-conversation = Conversation(account, connect, cloud=cloud)
-wake = WakeController(microphone, voice, conversation, account)
+providers = Providers(account, cloud=cloud)
+conversation = Conversation(account, connect, cloud=cloud, providers=providers)
+wake = WakeController(microphone, voice, conversation, account, providers=providers)
 
 def quit_app():
     quitting.set()
@@ -219,6 +221,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, account.public())
             if self.path == '/api/chat':
                 return self.send(200, conversation.snapshot())
+            if self.path == '/api/assistant':
+                return self.send(200, providers.public())
             if self.path == '/api/wake':
                 return self.send(200, wake.snapshot())
             if self.path == '/api/microphone':
@@ -313,6 +317,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {'ok':True}, headers={'Set-Cookie':cleared_session_cookie_header()})
             elif self.path == '/api/cloud/migrate':
                 return self.send(200, migrate_legacy())
+            elif self.path in ('/api/assistant', '/api/openrouter/key', '/api/openrouter/delete-key', '/api/openrouter/models'):
+                if self.path == '/api/openrouter/models':
+                    return self.send(200, providers.models())
+                wake.pause(disable=True)
+                microphone.stop()
+                conversation.cancel()
+                voice.stop()
+                if self.path == '/api/openrouter/key':
+                    return self.send(200, providers.save_key(payload.get('key')))
+                if self.path == '/api/openrouter/delete-key':
+                    return self.send(200, providers.delete_key())
+                return self.send(200, providers.save(payload))
             elif self.path == '/api/account/login':
                 return self.send(200, account.begin(payload.get('client')))
             elif self.path == '/api/account/models':
