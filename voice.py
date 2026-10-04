@@ -24,7 +24,8 @@ def extract_key(document):
 
 
 class Voice:
-    def __init__(self, directory):
+    def __init__(self, directory, cloud=None):
+        self.cloud = cloud
         self.config = Path(directory) / 'voice.json'
         self.lock = threading.RLock()
         self.generation = 0
@@ -39,6 +40,8 @@ class Voice:
         return Keyring()
 
     def settings(self):
+        if self.cloud:
+            return self.cloud.setting('voice', {'reference_id':'612b878b113047d9a770c069c8b4fdfe','model':'s2.1-pro-free'})
         try:
             data = json.loads(self.config.read_text())
             if not data.get('reference_id'):
@@ -71,8 +74,11 @@ class Voice:
                 self.keychain().set_password('space.jarvis.cyber.fish', 'api-key', key)
             except Exception:
                 raise ValueError('macOS 키체인에 키를 저장하지 못했어요.') from None
-        self.config.write_text(json.dumps({'reference_id': reference, 'model': model}))
-        self.config.chmod(0o600)
+        if self.cloud:
+            self.cloud.save_setting('voice', {'reference_id':reference,'model':model})
+        else:
+            self.config.write_text(json.dumps({'reference_id': reference, 'model': model}))
+            self.config.chmod(0o600)
         return self.snapshot()
 
     def request(self, path, body=None, model=None):
@@ -128,7 +134,8 @@ class Voice:
             self.state, self.error = 'generating', ''
         def worker():
             try:
-                audio = self.request('v1/tts', {'text': text, 'reference_id': config['reference_id'], 'format': 'mp3'}, config['model'])
+                generate = lambda: self.request('v1/tts', {'text': text, 'reference_id': config['reference_id'], 'format': 'mp3'}, config['model'])
+                audio = self.cloud.audio(text, config['reference_id'], config['model'], generate) if self.cloud else generate()
                 with self.lock:
                     if generation != self.generation:
                         return

@@ -58,7 +58,8 @@ def parse_xml(path):
 
 
 class Scanner:
-    def __init__(self, directory):
+    def __init__(self, directory, cloud=None):
+        self.cloud = cloud
         self.directory = Path(directory)
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.lock = threading.Lock()
@@ -121,6 +122,14 @@ class Scanner:
                     self.state.update(status='done', hosts=parse_xml(output))
             if output.exists():
                 os.chmod(output, 0o600)
+            if self.cloud:
+                scan = self.snapshot()
+                self.cloud.put('scan', scan, str(uuid.UUID(scan['id'])))
+                self.cloud.blob('scans/'+scan['id']+'.log', log.read_bytes(), 'text/plain')
+                if output.exists():
+                    self.cloud.blob('scans/'+scan['id']+'.xml', output.read_bytes(), 'application/xml')
+                with self.lock:
+                    self.state['cloud_saved'] = True
         except (OSError, ValueError, ET.ParseError) as e:
             with self.lock:
                 self.state.update(status='error', error=str(e))

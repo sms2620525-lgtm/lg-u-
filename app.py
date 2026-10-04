@@ -6,6 +6,8 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import tempfile
+import atexit
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -18,6 +20,7 @@ from chatgpt import ChatGPT, Conversation
 from microphone import Microphone
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
+from cloud import Cloud, RuntimeAuth
 
 if getattr(sys, 'frozen', False):
     ROOT = Path(sys._MEIPASS)
@@ -26,20 +29,21 @@ else:
 
 DATA = Path(os.environ.get('JARVIS_DATA_DIR', str(Path.home() / 'Library/Application Support/JarvisCyber' if sys.platform == 'darwin' else ROOT / 'data')))
 DATA.mkdir(mode=0o700, parents=True, exist_ok=True)
+# The legacy store is retained solely for regression tests and explicit migration reads.
+LOCAL_TEST = os.environ.get('JARVIS_TEST_LOCAL') == '1' and '--no-browser' in sys.argv
+runtime = tempfile.TemporaryDirectory(prefix='jarvis-runtime-')
+atexit.register(runtime.cleanup)
 DB = DATA / 'jarvis.sqlite3'
-legacy_db = ROOT / 'data' / 'jarvis.sqlite3'
-if not DB.exists() and legacy_db.exists() and legacy_db != DB:
-    with sqlite3.connect(legacy_db) as old, sqlite3.connect(DB) as new:
-        old.backup(new)
 TOKEN = secrets.token_urlsafe(32)
 PORT = int(os.environ.get('JARVIS_PORT', '8765'))
 ORIGIN = f'http://127.0.0.1:{PORT}'
-scanner = Scanner(DATA / 'scans')
+cloud = None if LOCAL_TEST else Cloud()
+scanner = Scanner(DATA / 'scans' if LOCAL_TEST else Path(runtime.name) / 'scans', cloud=cloud)
 phone = PhoneBridge()
-auth = Auth(DB)
-voice = Voice(DATA)
+auth = Auth(DB) if LOCAL_TEST else RuntimeAuth()
+voice = Voice(DATA, cloud=cloud)
 native_window = None
-account = ChatGPT(DATA, ORIGIN + '/auth/callback')
+account = ChatGPT(DATA, ORIGIN + '/auth/callback', cloud=cloud)
 microphone = Microphone(ROOT)
 
 def connect():
@@ -47,10 +51,49 @@ def connect():
     conn.row_factory = sqlite3.Row
     return conn
 
-with connect() as conn:
-    conn.execute('CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
-os.chmod(DB, 0o600)
-conversation = Conversation(account, connect)
+if LOCAL_TEST:
+    with connect() as conn:
+        conn.execute('CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
+    os.chmod(DB, 0o600)
+conversation = Conversation(account, connect, cloud=cloud)
+
+def migrate_legacy():
+    """Explicit, repeatable import. Existing local originals are never deleted."""
+    import uuid
+    if not cloud:
+        raise ValueError('클라우드 모드에서만 가져올 수 있어요.')
+    conversation.cancel()
+    counts = {'memories':0,'messages':0,'files':0}
+    def ident(name):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, 'jarvis-legacy:'+cloud.device+':'+name))
+    if DB.exists():
+        with sqlite3.connect(DB.as_uri()+'?mode=ro', uri=True) as db:
+            db.row_factory = sqlite3.Row
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'memories' in tables:
+                for row in db.execute('SELECT id,text FROM memories ORDER BY id'):
+                    cloud.put('memory', {'text':row['text']}, ident('memory:'+str(row['id'])))
+                    counts['memories'] += 1
+            if 'chats' in tables:
+                for row in db.execute('SELECT id,account,role,text FROM chats ORDER BY id'):
+                    cloud.put('message', {'account':row['account'],'role':row['role'],'text':row['text']}, ident('chat:'+str(row['id'])))
+                    counts['messages'] += 1
+    for filename, key in [('voice.json','voice'),('chatgpt-accounts.json','chatgpt:'+cloud.device)]:
+        path = DATA / filename
+        if path.exists():
+            value = json.loads(path.read_text())
+            existing = cloud.setting(key)
+            if existing is None or (filename.startswith('chatgpt') and not existing.get('accounts')):
+                cloud.save_setting(key, value)
+                if filename.startswith('chatgpt'):
+                    account.loaded = False
+    scan_dir = DATA / 'scans'
+    if scan_dir.exists():
+        for path in scan_dir.iterdir():
+            if path.is_file() and path.suffix in ('.xml','.log') and path.stat().st_size <= 16777216:
+                cloud.blob('legacy-scans/'+path.name,path.read_bytes())
+                counts['files'] += 1
+    return {'ok':True, **counts}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -82,6 +125,12 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, (ROOT / name).read_text().replace('__TOKEN__', TOKEN), 'text/html; charset=utf-8')
 
     def do_GET(self):
+        try:
+            self.get_request()
+        except ValueError as e:
+            self.send(503, {'error':str(e)})
+
+    def get_request(self):
         if self.headers.get('Host') != f'127.0.0.1:{PORT}':
             return self.send(403, {'error': '잘못된 접근 주소입니다.'})
 
@@ -105,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.redirect('/setup')
             if self.is_authed():
                 return self.redirect('/')
-            return self.page('login.html')
+            return self.page('cloud-login.html' if cloud else 'login.html')
         if self.path == '/':
             if not auth.has_password():
                 return self.redirect('/setup')
@@ -113,9 +162,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.redirect('/login')
             return self.page('index.html')
 
-        if self.path in ('/cyber.js', '/cyber.css', '/conversation.js'):
+        if self.path in ('/cyber.js', '/cyber.css', '/conversation.js', '/cloud-ui.js'):
             kind = 'application/javascript' if self.path.endswith('.js') else 'text/css'
             return self.send(200, (ROOT / self.path[1:]).read_text(), kind + '; charset=utf-8')
+
+        if self.path == '/api/cloud/status':
+            return self.send(200, cloud.status() if cloud else {'connected':False})
 
         if self.path.startswith('/api/'):
             if not self.is_authed():
@@ -131,8 +183,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/phone':
                 return self.send(200, phone.snapshot())
             if self.path == '/api/scan':
-                return self.send(200, scanner.snapshot())
+                result = scanner.snapshot()
+                if cloud and result['status']=='idle':
+                    rows = cloud.records('scan',limit=1)
+                    if rows:
+                        result = {**rows[0]['payload'], 'restored':True}
+                return self.send(200, result)
             if self.path == '/api/memories':
+                if cloud:
+                    return self.send(200, {'memories':cloud.memories(), 'tts_available':sys.platform == 'darwin'})
                 with connect() as conn:
                     rows = [dict(r) for r in conn.execute('SELECT * FROM memories ORDER BY id DESC')]
                 return self.send(200, {'memories': rows, 'tts_available': sys.platform == 'darwin'})
@@ -151,6 +210,22 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError()
+
+            if cloud and self.path in ('/api/cloud/otp','/api/cloud/verify','/api/cloud/resume'):
+                if self.path.endswith('/otp'):
+                    return self.send(200, cloud.otp(payload.get('email')))
+                if self.path.endswith('/verify'):
+                    conversation.cancel()
+                    voice.stop()
+                    cloud.verify(payload.get('code'))
+                    account.loaded = False
+                    account.meta = {'host':'urn:uuid:'+str(__import__('uuid').uuid4()),'active':None,'accounts':{}}
+                    auth.sessions.clear()
+                else:
+                    cloud.resume()
+                return self.send(200, {'ok':True}, headers={'Set-Cookie':session_cookie_header(auth.issue_session())})
+            if cloud and self.path in ('/api/setup','/api/login'):
+                raise ValueError('이메일 인증으로 클라우드에 로그인하세요.')
 
             if self.path == '/api/setup':
                 if auth.has_password():
@@ -180,7 +255,17 @@ class Handler(BaseHTTPRequestHandler):
             if not self.is_authed():
                 return self.send(401, {'error': '로그인이 필요합니다.'})
 
-            if self.path == '/api/account/login':
+            if self.path == '/api/cloud/logout':
+                microphone.stop()
+                conversation.cancel()
+                voice.stop()
+                cloud.signout()
+                auth.sessions.clear()
+                account.loaded = False
+                return self.send(200, {'ok':True}, headers={'Set-Cookie':cleared_session_cookie_header()})
+            elif self.path == '/api/cloud/migrate':
+                return self.send(200, migrate_legacy())
+            elif self.path == '/api/account/login':
                 return self.send(200, account.begin(payload.get('client')))
             elif self.path == '/api/account/models':
                 return self.send(200, account.models())
@@ -234,13 +319,19 @@ class Handler(BaseHTTPRequestHandler):
                 text = payload.get('text', '')
                 if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
                     return self.send(400, {'error': '기억은 1~2000자로 입력하세요.'})
-                with connect() as conn:
-                    conn.execute('INSERT INTO memories(text) VALUES (?)', (text.strip(),))
+                if cloud:
+                    cloud.put('memory', {'text':text.strip()})
+                else:
+                    with connect() as conn:
+                        conn.execute('INSERT INTO memories(text) VALUES (?)', (text.strip(),))
             elif self.path == '/api/delete':
-                if type(payload.get('id')) is not int:
-                    raise ValueError()
-                with connect() as conn:
-                    conn.execute('DELETE FROM memories WHERE id = ?', (payload['id'],))
+                if cloud:
+                    cloud.delete('memory', record_id=payload.get('id'))
+                else:
+                    if type(payload.get('id')) is not int:
+                        raise ValueError()
+                    with connect() as conn:
+                        conn.execute('DELETE FROM memories WHERE id = ?', (payload['id'],))
             elif self.path == '/api/speak':
                 microphone.stop()
                 return self.send(200, voice.speak(payload.get('text', '')))
@@ -278,7 +369,7 @@ if __name__ == '__main__':
                 subprocess.run([str(ROOT / 'JarvisSpeech'), '--check'], check=True, stdout=subprocess.DEVNULL, timeout=10)
                 def check_window():
                     try:
-                        smoke_result['ok'] = bool(native_window.evaluate_js("document.querySelector('input[type=password]') !== null"))
+                        smoke_result['ok'] = bool(native_window.evaluate_js("document.querySelector('input[type=email]') !== null"))
                     finally:
                         native_window.destroy()
                 native_window.events.loaded += check_window

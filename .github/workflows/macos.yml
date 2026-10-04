@@ -25,10 +25,13 @@ jobs:
       - run: python3 -m pip install "PyJWT[crypto]==2.10.1"
       - run: python3 -m unittest discover -s tests
       - run: python3 tests/integration.py
+      - run: python3 tests/cloud_smoke.py
       - run: bash build-macos.sh
 
       - name: Verify packaged setup, login and memory persistence
         run: python3 tests/integration.py --executable dist/JarvisCyber.app/Contents/MacOS/JarvisCyber
+      - name: Verify packaged cloud login and storage mode
+        run: python3 tests/cloud_smoke.py --executable dist/JarvisCyber.app/Contents/MacOS/JarvisCyber
       - name: Verify native app window loads and closes
         run: |
           export JARVIS_DATA_DIR="$(mktemp -d)"

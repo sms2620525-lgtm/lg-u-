@@ -1,3 +1,37 @@
+## Supabase cloud build (2026-10-04)
+
+Normal launches use Supabase project `xflhofkqakxhagtbwycp` for conversations,
+memories, settings, completed scan records, scan logs/XML and generated TTS cache.
+The shipped key is publishable only; Row Level Security isolates each user.
+
+1. Open the Apple Silicon app and request a login email using the Supabase project
+   owner's email. The default Supabase mail service restricts recipients and rate limits.
+2. Copy the **Sign in / Confirm** link address from the email into the app's masked field.
+   Do not open the link first. Numeric OTPs also work if custom SMTP/templates are configured.
+3. Use **Continue with ChatGPT** separately to authorize GPT inference.
+4. Import the Fish Audio key into Keychain. Choose **기존 로컬 데이터 가져오기** once
+   to copy older memories, conversations, voice/account settings and scan files.
+   Repeating the import uses stable IDs. Original local files are retained, not deleted.
+
+The app stores cloud and provider credentials in macOS Keychain. Operational state
+and brief read caches are in RAM. Nmap and afplay require temporary working files;
+these are removed on normal exit (audio on playback completion). A crash may leave
+OS temporary files. The app does not promise zero disk writes by macOS/WebKit.
+Internet access is required; failed writes produce an error instead of silently
+falling back to local persistence. Cloud logout revokes this session. Switching
+storage accounts requires restarting the app to isolate active workers.
+
+Applied database schema: `supabase/schema.sql`. A schema exists only once; do not
+rerun CREATE statements on an already configured project. The old SQLite code is
+retained for migration and explicit headless regression testing only.
+
+Validation: `python -m unittest discover -s tests`, `python tests/integration.py`,
+`python tests/cloud_smoke.py`. CI also checks the packaged native window, HTTPS and DMG.
+Bluetooth motion, physical microphone access, and the user's ChatGPT plan login
+still require a real Mac/device check. The app is ad-hoc signed, not notarized.
+
+---
+
 # JARVIS Cyber · 우주 테마 보안 작업 공간
 
 ## 설치 / DMG

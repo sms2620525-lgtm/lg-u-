@@ -30,6 +30,9 @@ build/JarvisSpeech --check
   --hidden-import=microphone \
   --hidden-import=jwt \
   --hidden-import=network \
+  --hidden-import=cloud \
+  --add-data 'cloud-login.html:.' \
+  --add-data 'cloud-ui.js:.' \
   --collect-data certifi \
   --collect-all cryptography \
   --add-binary 'build/JarvisSpeech:.' \

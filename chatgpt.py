@@ -58,7 +58,9 @@ def http_json(url, data=None, headers=None, form=False):
 
 
 class ChatGPT:
-    def __init__(self, directory, redirect_uri, vault=None):
+    def __init__(self, directory, redirect_uri, vault=None, cloud=None):
+        self.cloud = cloud
+        self.loaded = cloud is None
         self.path = Path(directory) / 'chatgpt-accounts.json'
         self.redirect_uri = redirect_uri
         self._vault = vault
@@ -67,6 +69,9 @@ class ChatGPT:
         self.error = ''
         self.catalog = []
         self.discovery = None
+        if cloud is not None:
+            self.meta = {'host': 'urn:uuid:' + str(uuid.uuid4()), 'active': None, 'accounts': {}}
+            return
         try:
             self.meta = json.loads(self.path.read_text())
         except (OSError, ValueError):
@@ -79,7 +84,21 @@ class ChatGPT:
             self._vault = Keyring()
         return self._vault
 
+    def load_cloud(self):
+        if self.cloud is not None and not self.loaded:
+            self.cloud.access()
+            name = 'chatgpt:' + self.cloud.device
+            saved = self.cloud.setting(name)
+            if saved:
+                self.meta = saved
+            else:
+                self.cloud.save_setting(name, self.meta)
+            self.loaded = True
+
     def save_meta(self):
+        if self.cloud is not None:
+            self.cloud.save_setting('chatgpt:' + self.cloud.device, self.meta)
+            return
         temp = self.path.with_suffix('.tmp')
         temp.touch(mode=0o600, exist_ok=True)
         temp.write_text(json.dumps(self.meta))
@@ -100,6 +119,7 @@ class ChatGPT:
             raise ValueError('ChatGPT 로그인 정보를 키체인에 저장하지 못했어요.') from None
 
     def public(self):
+        self.load_cloud()
         with self.lock:
             if self.pending and self.pending['expires'] <= time.monotonic():
                 self.pending = None
@@ -111,6 +131,7 @@ class ChatGPT:
             return {'accounts': accounts, 'active': active, 'email': a.get('email', ''), 'connected': a.get('connected', False), 'plan_enabled': a.get('plan_enabled', False), 'pending': bool(pending), 'error': self.error, 'models': self.catalog, 'model': a.get('model', '')}
 
     def begin(self, client=None):
+        self.load_cloud()
         with self.lock:
             if client is not None and client not in self.meta['accounts']:
                 raise ValueError('저장된 계정을 선택하세요.')
@@ -196,6 +217,7 @@ class ChatGPT:
         return self.public()
 
     def access(self):
+        self.load_cloud()
         with self.lock:
             client = self.meta['active']
             account = self.meta['accounts'].get(client, {})
@@ -271,18 +293,24 @@ class ChatGPT:
 
 
 class Conversation:
-    def __init__(self, account, connect):
+    def __init__(self, account, connect, cloud=None):
+        self.cloud = cloud
         self.account, self.connect = account, connect
         self.lock = threading.RLock()
         self.generation = 0
         self.response = None
         self.state = {'status': 'idle', 'draft': '', 'error': '', 'turn': 0}
+        if cloud is not None:
+            return
         with connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY, account TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL)')
 
     def snapshot(self):
         with self.lock:
             client = self.account.meta['active'] or ''
+            if self.cloud:
+                messages = self.cloud.messages(client)
+                return {**self.state, 'messages': messages}
             with self.connect() as db:
                 messages = [dict(r) for r in db.execute('SELECT id, role, text FROM (SELECT * FROM chats WHERE account=? ORDER BY id DESC LIMIT 100) ORDER BY id', (client,))]
             return {**self.state, 'messages': messages}
@@ -297,6 +325,9 @@ class Conversation:
 
     def clear(self):
         self.cancel()
+        if self.cloud:
+            self.cloud.delete('message', account=self.account.meta['active'] or '')
+            return
         with self.connect() as db:
             db.execute('DELETE FROM chats WHERE account=?', (self.account.meta['active'] or '',))
 
@@ -311,10 +342,15 @@ class Conversation:
                 self.account.models()
             client = self.account.meta['active']
             model = self.account.meta['accounts'][client]['model']
-            with self.connect() as db:
-                db.execute('INSERT INTO chats(account,role,text) VALUES(?,?,?)', (client, 'user', text.strip()))
-                history = [dict(r) for r in db.execute('SELECT role,text FROM (SELECT * FROM chats WHERE account=? ORDER BY id DESC LIMIT 24) ORDER BY id', (client,))]
-                memories = [r['text'] for r in db.execute('SELECT text FROM memories ORDER BY id DESC LIMIT 12')]
+            if self.cloud:
+                self.cloud.put('message', {'account':client,'role':'user','text':text.strip()})
+                history = self.cloud.messages(client, 24)
+                memories = [r['text'] for r in self.cloud.memories()[:12]]
+            else:
+                with self.connect() as db:
+                    db.execute('INSERT INTO chats(account,role,text) VALUES(?,?,?)', (client, 'user', text.strip()))
+                    history = [dict(r) for r in db.execute('SELECT role,text FROM (SELECT * FROM chats WHERE account=? ORDER BY id DESC LIMIT 24) ORDER BY id', (client,))]
+                    memories = [r['text'] for r in db.execute('SELECT text FROM memories ORDER BY id DESC LIMIT 12')]
             self.generation += 1
             generation = self.generation
             self.state = {'status': 'thinking', 'draft': '', 'error': '', 'turn': generation}
@@ -354,8 +390,11 @@ class Conversation:
                         return
                     if not complete or not self.state['draft'].strip():
                         raise ValueError('응답 연결이 끊겼어요. 다시 시도하세요.')
-                    with self.connect() as db:
-                        db.execute('INSERT INTO chats(account,role,text) VALUES(?,?,?)', (client, 'assistant', self.state['draft']))
+                    if self.cloud:
+                        self.cloud.put('message', {'account':client,'role':'assistant','text':self.state['draft']})
+                    else:
+                        with self.connect() as db:
+                            db.execute('INSERT INTO chats(account,role,text) VALUES(?,?,?)', (client, 'assistant', self.state['draft']))
                     self.state.update(status='done', draft='')
             except Exception as e:
                 with self.lock:

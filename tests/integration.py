@@ -18,7 +18,7 @@ args = parser.parse_args()
 command = [str(Path(args.executable).resolve())] if args.executable else [sys.executable, 'app.py']
 base = 'http://127.0.0.1:18765'
 with tempfile.TemporaryDirectory() as directory:
-    env = {**os.environ, 'JARVIS_DATA_DIR': directory, 'JARVIS_PORT': '18765'}
+    env = {**os.environ, 'JARVIS_DATA_DIR': directory, 'JARVIS_PORT': '18765', 'JARVIS_TEST_LOCAL':'1'}
     cookies = http.cookiejar.CookieJar()
     client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
     process = None

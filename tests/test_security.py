@@ -43,11 +43,21 @@ class APITests(unittest.TestCase):
         os.environ['JARVIS_DATA_DIR'] = cls.tmp.name
         import app
         cls.app = app
-        cls.app.auth.set_password('password1234')
+        cls.old_cloud = app.cloud
+        from unittest.mock import Mock
+        cls.rows=[]
+        app.cloud=Mock()
+        app.cloud.put.side_effect=lambda kind,payload: cls.rows.append({'id':'12345678-1234-1234-1234-123456789abc',**payload})
+        app.cloud.memories.side_effect=lambda: list(cls.rows)
+        app.cloud.delete.side_effect=lambda *a,**k: cls.rows.clear()
+        # These request guards do not depend on a local password backend.
+        if hasattr(cls.app.auth, 'set_password'):
+            cls.app.auth.set_password('password1234')
         cls.session = cls.app.auth.issue_session()
 
     @classmethod
     def tearDownClass(cls):
+        cls.app.cloud = cls.old_cloud
         cls.tmp.cleanup()
 
     def request(self, path, payload=None, valid=True):
