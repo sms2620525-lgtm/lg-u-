@@ -55,3 +55,48 @@ class CloudTests(unittest.TestCase):
         a=RuntimeAuth();token=a.issue_session()
         self.assertTrue(a.verify_session(token))
         self.assertFalse(RuntimeAuth().verify_session(token))
+
+class PKCETests(unittest.TestCase):
+    def test_mail_request_binds_verifier_and_return_origin(self):
+        c=Cloud(Vault());c.request=Mock(return_value={})
+        c.otp('test@example.com')
+        path,body=c.request.call_args.args
+        self.assertIn('redirect_to=http%3A%2F%2Flocalhost%3A3000',path)
+        import base64,hashlib
+        self.assertEqual(body['code_challenge'],base64.urlsafe_b64encode(hashlib.sha256(c.verifier.encode()).digest()).decode().rstrip('='))
+        self.assertEqual(body['code_challenge_method'],'s256')
+        self.assertGreater(c.status()['retry_after'],0)
+
+    def test_return_code_requires_pending_proof(self):
+        c=Cloud(Vault());c.request=Mock()
+        with self.assertRaises(ValueError):c.complete('code')
+        c.request.assert_not_called()
+
+    def test_callback_exchange_once_and_clears_pending(self):
+        c=Cloud(Vault());c.pending_email='a@example.com';c.verifier='proof';c.pending_until=time.time()+60
+        c.request=Mock(side_effect=[{'access_token':'access','refresh_token':'refresh'}, {'id':'user-a','email':'a@example.com'}])
+        c.complete('code')
+        self.assertEqual(c.request.call_args_list[0].args,('/auth/v1/token?grant_type=pkce',{'auth_code':'code','code_verifier':'proof'}))
+        self.assertFalse(c.status()['pending'])
+        self.assertTrue(c.status()['connected'])
+        with self.assertRaises(ValueError):c.complete('code')
+
+    def test_loopback_callback_handles_browser_return(self):
+        from callback import callback_server
+        from phone import NumericHTTPServer
+        import threading,urllib.request,urllib.error
+        c=Mock();c.complete.return_value={}
+        with patch('callback.NumericHTTPServer',side_effect=lambda address,handler:NumericHTTPServer(('127.0.0.1',0),handler)):
+            server=callback_server(c)
+        t=threading.Thread(target=server.serve_forever,daemon=True);t.start()
+        try:
+            base='http://127.0.0.1:'+str(server.server_address[1])
+            req=urllib.request.Request(base+'/?code=test-code',headers={'Host':'localhost:3000'})
+            with urllib.request.urlopen(req) as r:
+                self.assertEqual(r.status,200)
+                self.assertNotIn('test-code',r.read().decode())
+            c.complete.assert_called_once_with('test-code')
+            with self.assertRaises(urllib.error.HTTPError):
+                urllib.request.urlopen(urllib.request.Request(base+'/?code=x',headers={'Host':'evil.example'}))
+            self.assertEqual(c.complete.call_count,1)
+        finally:server.shutdown();server.server_close();t.join()

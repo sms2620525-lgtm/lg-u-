@@ -17,6 +17,6 @@ with tempfile.TemporaryDirectory() as d:
   assert not (Path(d)/'chatgpt-accounts.json').exists()
   assert not (Path(d)/'voice.json').exists()
   with urllib.request.urlopen('http://127.0.0.1:18767/api/cloud/status') as r:
-   state=json.load(r);assert set(state)=={'connected','email','project'}
+   state=json.load(r);assert {'connected','email','project','pending','retry_after','error'} == set(state)
   print('PASS: production cloud login page; no on-disk database, account metadata or voice settings')
  finally:proc.terminate();proc.wait(timeout=5)

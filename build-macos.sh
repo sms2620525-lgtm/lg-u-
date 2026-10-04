@@ -31,6 +31,7 @@ build/JarvisSpeech --check
   --hidden-import=jwt \
   --hidden-import=network \
   --hidden-import=cloud \
+  --hidden-import=callback \
   --add-data 'cloud-login.html:.' \
   --add-data 'cloud-ui.js:.' \
   --collect-data certifi \

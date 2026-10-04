@@ -1,5 +1,7 @@
 """Supabase user-scoped storage. No administrative keys or on-disk data cache."""
 import hashlib
+import base64
+import secrets
 import json
 import re
 import threading
@@ -22,6 +24,8 @@ class Cloud:
         self.cache = {}
         self.pending_email = None
         self.last_otp = 0
+        self.verifier = None
+        self.pending_until = 0
         self.error = ''
         self.device = None
         self.bound_user = None
@@ -52,6 +56,19 @@ class Cloud:
                 data = r.read(17 * 1024 * 1024)
                 return data if binary else (json.loads(data) if data else None)
         except urllib.error.HTTPError as e:
+            try:
+                detail = json.loads(e.read(8192))
+                code = detail.get('error_code') or detail.get('code') or detail.get('error')
+            except (ValueError, AttributeError):
+                code = None
+            messages = {
+                'otp_expired':'이 링크는 이미 사용했거나 만료됐어요. 새 인증 메일을 요청하세요.',
+                'over_email_send_rate_limit':'Supabase 인증 메일 발송 한도에 도달했어요. 잠시 기다린 뒤 다시 요청하세요. 같은 링크를 반복해 열지 마세요.',
+                'over_request_rate_limit':'인증 요청이 너무 많아요. 잠시 기다린 뒤 다시 시도하세요.',
+                'bad_code_verifier':'인증을 요청한 앱과 다른 세션이에요. 앱에서 새 메일을 요청하세요.',
+                'flow_state_not_found':'인증 대기가 만료됐어요. 앱에서 새 메일을 요청하세요.'}
+            if code in messages:
+                raise ValueError(messages[code]) from None
             raise ValueError({400:'인증번호 또는 요청을 확인하세요.',401:'클라우드에 다시 로그인하세요.',403:'클라우드 접근 권한이 없어요. 프로젝트 소유자 이메일을 사용하세요.',404:'클라우드 저장 항목을 찾지 못했어요.',422:'이메일 또는 인증번호를 확인하세요.',429:'인증 요청이 많아요. 잠시 후 다시 시도하세요.'}.get(e.code, f'클라우드 요청 실패 (HTTP {e.code}). 저장되지 않았어요.')) from None
         except (OSError, urllib.error.URLError):
             raise ValueError('Supabase에 연결하지 못했어요. 인터넷 연결을 확인하세요. 저장은 완료되지 않았어요.') from None
@@ -92,10 +109,32 @@ class Cloud:
         with self.lock:
             if time.time()-self.last_otp < 60:
                 raise ValueError('인증 메일은 60초 후 다시 요청할 수 있어요.')
-            self.request('/auth/v1/otp',{'email':email,'create_user':True},authenticated=False)
+            verifier = secrets.token_urlsafe(48)
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+            self.request('/auth/v1/otp?redirect_to=http%3A%2F%2Flocalhost%3A3000',{'email':email,'create_user':True,'code_challenge':challenge,'code_challenge_method':'s256'},authenticated=False)
+            self.verifier = verifier
+            self.pending_until = time.time()+3600
+            self.error = ''
             self.pending_email = email
             self.last_otp = time.time()
         return {'ok':True}
+
+    def complete(self, code):
+        with self.lock:
+            if not self.pending_email or not self.verifier or time.time()>self.pending_until:
+                raise ValueError('인증을 요청한 앱을 켜 둔 상태에서 최신 메일을 여세요. 앱을 재시작했다면 새 메일이 필요해요.')
+            if not isinstance(code,str) or not 1 <= len(code) <= 2048:
+                raise ValueError('로그인 복귀 코드가 올바르지 않아요.')
+            try:
+                data = self.request('/auth/v1/token?grant_type=pkce', {'auth_code':code,'code_verifier':self.verifier},authenticated=False)
+                self.accept(data)
+            except ValueError as e:
+                self.error = str(e)
+                raise
+            self.pending_email = None
+            self.verifier = None
+            self.error = ''
+        return self.status()
 
     def verify(self, token):
         with self.lock:
@@ -106,6 +145,8 @@ class Cloud:
             else:
                 parsed = urllib.parse.urlsplit(token)
                 query = urllib.parse.parse_qs(parsed.query)
+                if parsed.scheme=='http' and parsed.netloc in ('localhost:3000','127.0.0.1:3000') and parsed.path in ('','/') and len(query.get('code',[]))==1:
+                    return self.complete(query['code'][0])
                 if (parsed.scheme!='https' or parsed.netloc!=urllib.parse.urlsplit(URL).netloc
                         or parsed.path!='/auth/v1/verify' or len(query.get('token',[]))!=1
                         or query.get('type') not in (['magiclink'],['signup'],['email'])):
@@ -114,10 +155,11 @@ class Cloud:
             data = self.request('/auth/v1/verify',body,authenticated=False)
             self.accept(data)
             self.pending_email = None
+            self.verifier = None
         return self.status()
 
     def status(self):
-        return {'connected':bool(self.session),'email':self.session['user']['email'] if self.session else '', 'project':'xflhofkqakxhagtbwycp'}
+        return {'connected':bool(self.session),'email':self.session['user']['email'] if self.session else '', 'project':'xflhofkqakxhagtbwycp','pending':bool(self.pending_email),'retry_after':max(0,int(60-(time.time()-self.last_otp))),'error':self.error}
 
     def resume(self):
         self.access()
@@ -133,6 +175,8 @@ class Cloud:
             except Exception:
                 raise ValueError('키체인의 세션을 지우지 못했어요.') from None
             self.session = None
+            self.pending_email = None
+            self.verifier = None
             self.cache.clear()
 
     def uid(self):

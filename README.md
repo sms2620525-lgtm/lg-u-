@@ -1,3 +1,15 @@
+## Email login return fix (2026-10-04)
+
+Email verification now uses PKCE. Keep JARVIS running and open the newest email
+on the same Mac. Clicking its login button returns to the project's configured
+`http://localhost:3000` address. A loopback-only listener exchanges the one-time
+code with the in-memory verifier; the native app detects completion and opens.
+If port 3000 belongs to another app, copy the post-verification return URL into
+JARVIS's masked fallback field. Never send this URL to another person.
+Restarting JARVIS loses pending proof; request a fresh email after restarting.
+The app displays resend cooldowns, used/expired-link errors and server mail limits.
+No server rate limits or email-verification protections have been disabled.
+
 ## Supabase cloud build (2026-10-04)
 
 Normal launches use Supabase project `xflhofkqakxhagtbwycp` for conversations,
@@ -6,8 +18,8 @@ The shipped key is publishable only; Row Level Security isolates each user.
 
 1. Open the Apple Silicon app and request a login email using the Supabase project
    owner's email. The default Supabase mail service restricts recipients and rate limits.
-2. Copy the **Sign in / Confirm** link address from the email into the app's masked field.
-   Do not open the link first. Numeric OTPs also work if custom SMTP/templates are configured.
+2. Open the newest **Sign in / Confirm** link on the same Mac while the app is running.
+   The app connects automatically. Numeric OTPs also work if custom SMTP/templates are configured.
 3. Use **Continue with ChatGPT** separately to authorize GPT inference.
 4. Import the Fish Audio key into Keychain. Choose **기존 로컬 데이터 가져오기** once
    to copy older memories, conversations, voice/account settings and scan files.

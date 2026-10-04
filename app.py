@@ -21,6 +21,7 @@ from microphone import Microphone
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
 from cloud import Cloud, RuntimeAuth
+from callback import callback_server
 
 if getattr(sys, 'frozen', False):
     ROOT = Path(sys._MEIPASS)
@@ -353,6 +354,14 @@ if __name__ == '__main__':
         jwt.PyJWKClient(discovery['jwks_uri'], ssl_context=tls_context()).get_jwk_set()
         sys.exit(0)
     server = NumericHTTPServer(('127.0.0.1', PORT), Handler)
+    cloud_callback = None
+    if cloud:
+        try:
+            cloud_callback = callback_server(cloud)
+            threading.Thread(target=cloud_callback.serve_forever, daemon=True).start()
+        except OSError:
+            # The masked return-URL field remains available if another app owns port 3000.
+            cloud.error = '다른 앱이 인증 복귀 포트를 사용 중이에요. 메일 인증 후 주소창의 복귀 주소를 아래 입력란에 붙여넣으세요.'
     try:
         if '--no-browser' in sys.argv:
             # Headless integration-test mode, never opens a browser.
@@ -392,3 +401,6 @@ if __name__ == '__main__':
         scanner.cancel()
         voice.stop()
         server.server_close()
+        if cloud_callback:
+            cloud_callback.shutdown()
+            cloud_callback.server_close()
