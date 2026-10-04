@@ -14,9 +14,11 @@ from pathlib import Path
 p=Path('build/speech-info.plist')
 p.write_bytes(plistlib.dumps({'CFBundleIdentifier':'space.jarvis.cyber.speech','CFBundleName':'JarvisCyber Voice','NSMicrophoneUsageDescription':'자비스 호출과 음성 대화에 마이크를 사용합니다.','NSSpeechRecognitionUsageDescription':'한국어 음성을 텍스트로 변환해 자비스와 대화합니다.'}))
 SPEECHPLIST
-xcrun swiftc native/SpeechHelper.swift -o build/JarvisSpeech -framework AVFoundation -framework Speech \
+cp native/SpeechHelper.swift build/main.swift
+xcrun swiftc build/main.swift native/ClapDetector.swift -o build/JarvisSpeech -framework AVFoundation -framework Speech \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker build/speech-info.plist
 build/JarvisSpeech --check
+build/JarvisSpeech --clap-check
 .build-venv/bin/python -m PyInstaller \
   --noconfirm \
   --clean \

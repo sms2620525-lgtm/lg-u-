@@ -15,12 +15,12 @@
     try{const d=await api('microphone/start',{});if(op!==micOperation)return;micSeq=d.seq;micRunning=true;state('LISTENING');listen(mode==='ip'?'IP 주소를 말씀하세요.':mode==='direct'?'듣고 있어요. 말씀을 마치면 전송됩니다.':'호출 대기 중 · “자비스”라고 불러 주세요.');}
     catch(e){micRunning=false;micMode='off';wakeEnabled=false;updateWakeButton();error(e.message);listen('마이크를 시작하지 못했어요.');}
   }
-  async function pauseMic(){++micOperation;micRunning=false;micMode='off';await api('microphone/stop',{});}
+  async function pauseMic(){await api('wake/pause',{});++micOperation;micRunning=false;micMode='off';await api('microphone/stop',{});}
   function updateWakeButton(){$('chat-wake').textContent=wakeEnabled?'호출 대기 끄기':'호출 대기 켜기';$('wake-toggle').textContent=wakeEnabled?'호출 대기 끄기':'자비스 호출 대기';}
-  async function resumeWake(){if(wakeEnabled&&!speaking&&!chatBusy&&!sending)await startMic('wake');else if(!speaking&&!chatBusy)state('STANDBY');}
-  window.stopConversationMic=async()=>{wakeEnabled=false;updateWakeButton();await pauseMic();};
+  async function resumeWake(){if(wakeEnabled&&!speaking&&!chatBusy&&!sending)await api('wake/resume',{});else if(!speaking&&!chatBusy)state('STANDBY');}
+  window.stopConversationMic=async()=>{wakeEnabled=false;updateWakeButton();await api('wake/disable',{});await pauseMic();};
   window.listenForIP=async()=>{if(speaking||chatBusy){error('응답을 중지한 뒤 IP를 입력하세요.');return;}error('');await startMic('ip');};
-  $('chat-wake').onclick=async()=>{if(!accountReady){error('먼저 ChatGPT 계정을 연결해 주세요.');return;}wakeEnabled=!wakeEnabled;updateWakeButton();if(wakeEnabled)await resumeWake();else{await pauseMic();listen('호출 대기가 꺼졌어요.');}};
+  $('chat-wake').onclick=async()=>{try{const d=await api(wakeEnabled?'wake/disable':'wake/enable',{});wakeEnabled=d.enabled;updateWakeButton();error('');}catch(e){error(e.message);}};
   $('chat-mic').onclick=async()=>{if(!accountReady){error('먼저 ChatGPT 계정을 연결해 주세요.');return;}if(micRunning&&micMode==='direct'){await pauseMic();await resumeWake();return;}if(chatBusy||speaking){error('응답을 중지한 뒤 말씀해 주세요.');return;}await startMic('direct');};
   async function stopAll(){voiceEpoch++;speechQueue=[];speaking=false;chatBusy=false;sending=false;await pauseMic();await api('chat/cancel',{});await api('stop',{});state('STANDBY');}
   $('chat-stop').onclick=async()=>{try{await stopAll();await resumeWake();}catch(e){error(e.message);}};
@@ -39,8 +39,8 @@
   async function nextSpeech(){if(!speechQueue.length){speaking=false;await resumeWake();return;}const epoch=voiceEpoch;const text=speechQueue.shift();speaking=true;speechPending=true;state('SPEAKING');await pauseMic();try{await api('speak',{text});if(epoch!==voiceEpoch)return;}catch(e){if(epoch!==voiceEpoch)return;speechQueue=[];speaking=false;error('답변은 완료됐지만 음성을 재생하지 못했어요: '+e.message);await resumeWake();}finally{speechPending=false;}}
   async function chatPoll(){try{const d=await api('chat');render(d);chatBusy=d.status==='thinking';$('chat-send').disabled=chatBusy||sending;
     if(chatBusy)state('THINKING');
-    if(d.status==='done'&&d.turn!==readTurn){readTurn=d.turn;if(d.turn===lastTurn&&$('auto-speak').checked){const text=d.messages.filter(m=>m.role==='assistant').at(-1)?.text||'';speechQueue=text.match(/[\s\S]{1,1800}/g)||[];await nextSpeech();}else await resumeWake();}
-    if(d.status==='error'&&d.turn!==readTurn){readTurn=d.turn;error(d.error);state('STANDBY');await resumeWake();}
+    if(!d.background&&d.status==='done'&&d.turn!==readTurn){readTurn=d.turn;if(d.turn===lastTurn&&$('auto-speak').checked){const text=d.messages.filter(m=>m.role==='assistant').at(-1)?.text||'';speechQueue=text.match(/[\s\S]{1,1800}/g)||[];await nextSpeech();}else await resumeWake();}
+    if(!d.background&&d.status==='error'&&d.turn!==readTurn){readTurn=d.turn;error(d.error);state('STANDBY');await resumeWake();}
   }catch(e){error(e.message);}setTimeout(chatPoll,500);}
   async function voicePoll(){try{if(speaking&&!speechPending){const d=await api('voice');if(d.status==='idle')await nextSpeech();else if(d.status==='error'){speechQueue=[];speaking=false;error(d.error);await resumeWake();}}}catch(e){error(e.message);}setTimeout(voicePoll,500);}
   async function micPoll(){try{if(micRunning){const d=await api('microphone');if(d.status==='error'){micRunning=false;wakeEnabled=false;micMode='off';updateWakeButton();error(d.error);listen('마이크 연결을 확인하세요.');state('STANDBY');}
@@ -65,5 +65,6 @@
   $('account-usage').onclick=()=>api('account/usage',{}).catch(e=>error(e.message));
   $('chat-model').onchange=()=>api('account/model',{model:$('chat-model').value}).catch(e=>error(e.message));
   async function accountPoll(){try{await updateAccount(await api('account'));}catch(e){error(e.message);}setTimeout(accountPoll,2000);}
-  chatPoll();voicePoll();micPoll();accountPoll();
+  async function wakePoll(){try{const d=await api('wake');wakeEnabled=d.enabled;updateWakeButton();if(d.error)error(d.error);if(d.enabled&&d.phase!=='manual'){const labels={waiting:'박수 두 번으로 깨우세요 · 창을 닫아도 대기합니다.',greeting:'네, 듣고 있어요.',listening:'듣고 있어요. 말씀해 주세요.',thinking:'답변을 준비하고 있어요.',speaking:'답변을 읽고 있어요.'};listen(labels[d.phase]||'');state(({waiting:'STANDBY',greeting:'SPEAKING',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'})[d.phase]||'STANDBY');}}catch(e){error(e.message);}setTimeout(wakePoll,500);}
+  chatPoll();voicePoll();micPoll();accountPoll();wakePoll();
 })();

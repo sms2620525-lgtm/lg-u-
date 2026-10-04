@@ -8,6 +8,11 @@ func emit(_ value: [String: Any]) {
         fflush(stdout)
     }
 }
+if CommandLine.arguments.contains("--clap-check") {
+    checkClapDetector()
+    emit(["ok": true, "detector": "double-clap"])
+    exit(0)
+}
 if CommandLine.arguments.contains("--check") {
     emit(["ok": true, "engine": "Apple Speech", "locale": "ko-KR"])
     exit(0)
@@ -104,11 +109,51 @@ final class Listener {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.start() }
     }
 }
+final class ClapListener {
+    let engine = AVAudioEngine()
+    let detector = ClapDetector()
+    func start() {
+        let node = engine.inputNode
+        let format = node.outputFormat(forBus: 0)
+        guard format.sampleRate > 0 && format.channelCount > 0 else {
+            emit(["type":"error", "text":"사용 가능한 마이크가 없어요."])
+            exit(1)
+        }
+        node.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            guard let samples = buffer.floatChannelData?[0] else { return }
+            let count = Int(buffer.frameLength)
+            guard count > 0 else { return }
+            var energy: Float = 0
+            var peak: Float = 0
+            for i in 0..<count {
+                let x = abs(samples[i])
+                peak = max(peak, x)
+                energy += x*x
+            }
+            if self.detector.process(rms: sqrt(energy/Float(count)), peak: peak, at: ProcessInfo.processInfo.systemUptime) {
+                emit(["type":"clap_pair", "text":"박수 두 번 감지"])
+            }
+        }
+        do {
+            engine.prepare()
+            try engine.start()
+            emit(["type":"ready", "text":"박수 대기 중"])
+        } catch {
+            emit(["type":"error", "text":"박수 감지 마이크를 켜지 못했어요."])
+            exit(1)
+        }
+    }
+}
 let listener = Listener()
+let clapListener = ClapListener()
 AVCaptureDevice.requestAccess(for: .audio) { allowed in
     guard allowed else {
         emit(["type": "error", "text": "시스템 설정에서 JarvisCyber 마이크 권한을 허용하세요."])
         exit(1)
+    }
+    if CommandLine.arguments.contains("--clap") {
+        DispatchQueue.main.async { clapListener.start() }
+        return
     }
     SFSpeechRecognizer.requestAuthorization { status in
         guard status == .authorized else {

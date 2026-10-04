@@ -18,6 +18,7 @@ from auth import Auth, AuthError, read_cookie, session_cookie_header, cleared_se
 from voice import Voice
 from chatgpt import ChatGPT, Conversation
 from microphone import Microphone
+from wake import WakeController
 from security import Scanner
 from phone import PhoneBridge, NumericHTTPServer
 from cloud import Cloud, RuntimeAuth
@@ -44,6 +45,7 @@ phone = PhoneBridge()
 auth = Auth(DB) if LOCAL_TEST else RuntimeAuth()
 voice = Voice(DATA, cloud=cloud)
 native_window = None
+quitting = threading.Event()
 account = ChatGPT(DATA, ORIGIN + '/auth/callback', cloud=cloud)
 microphone = Microphone(ROOT)
 
@@ -57,6 +59,46 @@ if LOCAL_TEST:
         conn.execute('CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
     os.chmod(DB, 0o600)
 conversation = Conversation(account, connect, cloud=cloud)
+wake = WakeController(microphone, voice, conversation, account)
+
+def quit_app():
+    quitting.set()
+    wake.pause(disable=True)
+    if native_window:
+        native_window.destroy()
+
+native_delegate = None
+
+def install_native_delegate():
+    # Preserve pywebview's delegate lifecycle, adding Dock reopen and real Cmd+Q.
+    from webview.platforms.cocoa import BrowserView
+    from AppKit import NSApplication
+    from PyObjCTools import AppHelper
+    from objc import super as objc_super
+    class JarvisAppDelegate(BrowserView.AppDelegate):
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, app, visible):
+            native_window.show()
+            return True
+
+        def applicationShouldTerminate_(self, app):
+            quitting.set()
+            wake.pause(disable=True)
+            microphone.stop()
+            voice.stop()
+            return objc_super(JarvisAppDelegate, self).applicationShouldTerminate_(app)
+
+    def install():
+        global native_delegate
+        native_delegate = JarvisAppDelegate.alloc().init()
+        NSApplication.sharedApplication().setDelegate_(native_delegate)
+    AppHelper.callAfter(install)
+
+def hide_on_close():
+    if not quitting.is_set():
+        native_window.hide()
+        return False
+    return True
+
 
 def migrate_legacy():
     """Explicit, repeatable import. Existing local originals are never deleted."""
@@ -177,6 +219,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, account.public())
             if self.path == '/api/chat':
                 return self.send(200, conversation.snapshot())
+            if self.path == '/api/wake':
+                return self.send(200, wake.snapshot())
             if self.path == '/api/microphone':
                 return self.send(200, microphone.snapshot())
             if self.path == '/api/voice':
@@ -216,6 +260,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path.endswith('/otp'):
                     return self.send(200, cloud.otp(payload.get('email')))
                 if self.path.endswith('/verify'):
+                    wake.pause(disable=True)
                     conversation.cancel()
                     voice.stop()
                     cloud.verify(payload.get('code'))
@@ -247,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
                 token = auth.issue_session()
                 return self.send(200, {'ok': True}, headers={'Set-Cookie': session_cookie_header(token)})
             elif self.path == '/api/logout':
+                wake.pause(disable=True)
                 microphone.stop()
                 conversation.cancel()
                 voice.stop()
@@ -257,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(401, {'error': '로그인이 필요합니다.'})
 
             if self.path == '/api/cloud/logout':
+                wake.pause(disable=True)
                 microphone.stop()
                 conversation.cancel()
                 voice.stop()
@@ -273,10 +320,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/account/model':
                 account.select_model(payload.get('model'))
             elif self.path == '/api/account/switch':
+                wake.pause(disable=True)
                 conversation.cancel()
                 voice.stop()
                 return self.send(200, account.switch(payload.get('client')))
             elif self.path == '/api/account/logout':
+                wake.pause(disable=True)
                 microphone.stop()
                 conversation.cancel()
                 voice.stop()
@@ -284,6 +333,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/account/usage':
                 webbrowser.open('https://chatgpt.com/settings/usage')
             elif self.path == '/api/chat':
+                wake.pause()
                 microphone.stop()
                 voice.stop()
                 return self.send(200, conversation.start(payload.get('text')))
@@ -293,7 +343,16 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/chat/clear':
                 conversation.clear()
                 voice.stop()
+            elif self.path == '/api/wake/enable':
+                return self.send(200, wake.enable())
+            elif self.path == '/api/wake/disable':
+                return self.send(200, wake.pause(disable=True))
+            elif self.path == '/api/wake/pause':
+                return self.send(200, wake.pause())
+            elif self.path == '/api/wake/resume':
+                return self.send(200, wake.resume())
             elif self.path == '/api/microphone/start':
+                wake.pause()
                 return self.send(200, microphone.start())
             elif self.path == '/api/microphone/stop':
                 microphone.stop()
@@ -313,8 +372,7 @@ class Handler(BaseHTTPRequestHandler):
                 scanner.cancel()
             elif self.path == '/api/quit':
                 scanner.cancel()
-                if native_window:
-                    native_window.destroy()
+                quit_app()
                 threading.Thread(target=self.server.shutdown, daemon=True).start()
             elif self.path == '/api/memories':
                 text = payload.get('text', '')
@@ -374,18 +432,25 @@ if __name__ == '__main__':
                 width=1440, height=940, min_size=(1000, 720), background_color='#020c10')
             smoke = '--native-smoke' in sys.argv
             smoke_result = {'ok': False}
+            native_window.events.closing += hide_on_close
+            from webview.menu import Menu, MenuAction
+            app_menu = [Menu('자비스', [MenuAction('창 열기', native_window.show),
+                MenuAction('박수 대기 끄기', lambda: wake.pause(disable=True)),
+                MenuAction('자비스 종료', quit_app)])]
             if smoke:
                 subprocess.run([str(ROOT / 'JarvisSpeech'), '--check'], check=True, stdout=subprocess.DEVNULL, timeout=10)
                 def check_window():
                     try:
-                        smoke_result['ok'] = bool(native_window.evaluate_js("document.querySelector('input[type=email]') !== null"))
+                        smoke_result['ok'] = hide_on_close() is False
+                        native_window.show()
+                        smoke_result['ok'] = smoke_result['ok'] and bool(native_window.evaluate_js("document.querySelector('input[type=email]') !== null"))
                     finally:
-                        native_window.destroy()
+                        quit_app()
                 native_window.events.loaded += check_window
-                watchdog = threading.Timer(40, native_window.destroy)
+                watchdog = threading.Timer(40, quit_app)
                 watchdog.daemon = True
                 watchdog.start()
-            webview.start(gui='cocoa', debug=False, private_mode=True)
+            webview.start(install_native_delegate, gui='cocoa', debug=False, private_mode=True, menu=app_menu)
             if smoke:
                 watchdog.cancel()
                 if not smoke_result['ok']:
@@ -395,6 +460,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         pass
     finally:
+        wake.pause(disable=True)
         microphone.stop()
         conversation.cancel()
         phone.stop()

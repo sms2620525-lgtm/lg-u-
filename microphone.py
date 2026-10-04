@@ -14,14 +14,20 @@ class Microphone:
         self.seq = 0
         self.status = 'off'
         self.error = ''
+        self.mode = 'speech'
 
-    def start(self):
+    def start(self, mode="speech"):
+        if mode not in ("speech", "clap"):
+            raise ValueError("지원하지 않는 마이크 모드예요.")
+        if self.process and self.mode != mode:
+            self.stop()
         with self.lock:
             if self.process and self.process.poll() is None:
                 return self.snapshot()
             if not self.executable.exists():
                 raise ValueError('음성 입력은 macOS DMG 앱에서 사용할 수 있어요.')
-            process = subprocess.Popen([str(self.executable)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            self.mode = mode
+            process = subprocess.Popen([str(self.executable)] + (['--clap'] if mode == 'clap' else []), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
             self.process = process
             self.status, self.error = 'starting', ''
         def read():
@@ -61,4 +67,4 @@ class Microphone:
 
     def snapshot(self):
         with self.lock:
-            return {'status': self.status, 'error': self.error, 'seq': self.seq, 'events': list(self.events)}
+            return {'status': self.status, 'error': self.error, 'seq': self.seq, 'events': list(self.events), 'mode':self.mode}
